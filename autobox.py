@@ -1,7 +1,7 @@
 from taskinit import * # This gets me the toolkit tasks.
 
 def runTclean(paramList, sidelobeThreshold,floorThreshold, peakThreshold,
-              smoothFactor,cutThreshold):
+              smoothFactor,cutThreshold, circle=False, targetres=False):
     '''
     run clean
     '''
@@ -65,7 +65,7 @@ def runTclean(paramList, sidelobeThreshold,floorThreshold, peakThreshold,
             print name, " threshold is ", value
      
         # create a new mask
-        calcMask(residImage,maskThreshold,smoothKernel,cutThreshold)
+        calcMask(residImage,maskThreshold,smoothKernel,cutThreshold,circle=circle,targetres=targetres)
 
         # move things around so that the mask is read
         if imager.ncycle > 0:
@@ -161,23 +161,37 @@ def findResidualPeak(residImage):
     residPeak = residStats['max'][0] ## do I want to make this the absolute value of the max/min??
     return residPeak
 
-def calcMask(residImage, maskThreshold,smoothKernel,cutThreshold):
+def calcMask(residImage, maskThreshold,smoothKernel,cutThreshold,
+             circle=False,targetres=False):
     '''
     calculate the mask based on the residual image and the mask threshold
     '''
 
+    import math
+
     ia.open(residImage)
     tmpMask = ia.imagecalc('tmp_mask','iif('+residImage+'>'+str(maskThreshold)+',1.0,0.0)',overwrite=True)
 
-    # this is to avoid a bug with ia.convolve2d. bug reported in CAS-8928. turns out the
-    # default is something assigned to the value which is annoying. Need to assign to null 
-    # value to get to work.
-    #majorStr = str(smoothKernel['major']['value'])+smoothKernel['major']['unit']
-    #minorStr = str(smoothKernel['minor']['value'])+smoothKernel['minor']['unit']
-    #paStr = str(smoothKernel['pa']['value'])+smoothKernel['pa']['unit']
+    major = smoothKernel['major']['value']
+    minor = smoothKernel['minor']['value']
+    pa = smoothKernel['pa']['value']
+
+    if circle:
+        fwhm = major
+        major = fwhm
+        minor = fwhm
+        pa = 0.0
+
+    majorStr = str(major)+smoothKernel['major']['unit']
+    minorStr = str(minor)+smoothKernel['minor']['unit']
+    paStr = str(pa)+smoothKernel['pa']['unit']
+
+    print "smoothing by " + majorStr + " by " + minorStr
+    print "targetres is " + str(targetres)
 
     tmpSmoothMask = tmpMask.convolve2d(outfile='tmp_smooth_mask',axes=[0,1],type='gauss',
-                                     major="",minor="",pa="",beam=smoothKernel,overwrite=True)
+                                       major=majorStr,minor=minorStr,pa=paStr,
+                                       overwrite=True,targetres=targetres)
 
     tmpMask.done()
     
