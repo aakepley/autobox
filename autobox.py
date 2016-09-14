@@ -1,7 +1,7 @@
 from taskinit import * # This gets me the toolkit tasks.
 
 def runTclean(paramList, sidelobeThreshold,floorThreshold, peakThreshold,
-              smoothFactor,cutThreshold, circle=False, targetres=False):
+              smoothFactor,cutThreshold, circle=False,verbose=False):
     '''
     run clean
     '''
@@ -65,16 +65,22 @@ def runTclean(paramList, sidelobeThreshold,floorThreshold, peakThreshold,
             print name, " threshold is ", value
      
         # create a new mask
-        calcMask(residImage,maskThreshold,smoothKernel,cutThreshold,circle=circle,targetres=targetres)
+        maskRoot = 'tmp'
+        calcMask(residImage,maskThreshold,smoothKernel,cutThreshold,circle=circle,maskRoot=maskRoot)
 
         # move things around so that the mask is read
         if imager.ncycle > 0:
-            shutil.copytree(maskImage,maskImage+str(imager.ncycle))
+            oldMaskImage = maskImage+str(imager.ncycle)
+            shutil.copytree(maskImage,oldMaskImage)
+            addMasks(oldMaskImage,maskRoot+'_final_mask',maskRoot+'_final_mask_sum')
+            finalMaskImage = maskRoot+'_final_mask_sum'
+        else:
+            finalMaskImage = maskRoot+'_final_mask'
 
         if os.path.exists(maskImage):
             shutil.rmtree(maskImage)
 
-        shutil.copytree('tmp_final_mask',maskImage)
+        shutil.copytree(finalMaskImage,maskImage)
     
         imager.runMinorCycle() 
         imager.runMajorCycle()
@@ -162,7 +168,7 @@ def findResidualPeak(residImage):
     return residPeak
 
 def calcMask(residImage, maskThreshold,smoothKernel,cutThreshold,
-             circle=False,targetres=False):
+             circle=False,maskRoot='tmp'):
     '''
     calculate the mask based on the residual image and the mask threshold
     '''
@@ -170,7 +176,8 @@ def calcMask(residImage, maskThreshold,smoothKernel,cutThreshold,
     import math
 
     ia.open(residImage)
-    tmpMask = ia.imagecalc('tmp_mask','iif('+residImage+'>'+str(maskThreshold)+',1.0,0.0)',overwrite=True)
+    tmpMaskName = maskRoot+'_mask'
+    tmpMask = ia.imagecalc(tmpMaskName,'iif('+residImage+'>'+str(maskThreshold)+',1.0,0.0)',overwrite=True)
 
     major = smoothKernel['major']['value']
     minor = smoothKernel['minor']['value']
@@ -187,19 +194,20 @@ def calcMask(residImage, maskThreshold,smoothKernel,cutThreshold,
     paStr = str(pa)+smoothKernel['pa']['unit']
 
     print "smoothing by " + majorStr + " by " + minorStr
-    print "targetres is " + str(targetres)
 
-    tmpSmoothMask = tmpMask.convolve2d(outfile='tmp_smooth_mask',axes=[0,1],type='gauss',
+    tmpSmoothMaskName = maskRoot+'_smooth_mask'
+    tmpSmoothMask = tmpMask.convolve2d(outfile=tmpSmoothMaskName,axes=[0,1],type='gauss',
                                        major=majorStr,minor=minorStr,pa=paStr,
-                                       overwrite=True,targetres=targetres)
+                                       overwrite=True)
 
     tmpMask.done()
     
     tmpSmoothMaskStats = tmpSmoothMask.statistics()
     tmpSmoothMaskPeak = tmpSmoothMaskStats['max'][0]
     
-    tmpFinalMask = tmpSmoothMask.imagecalc('tmp_final_mask',
-                                           'iif(tmp_smooth_mask'+'>'+str(cutThreshold*tmpSmoothMaskPeak)+',1.0,0.0)',
+    tmpFinalMaskName = maskRoot+'_final_mask'
+    tmpFinalMask = tmpSmoothMask.imagecalc(tmpFinalMaskName,
+                                           'iif('+tmpSmoothMaskName+'>'+str(cutThreshold*tmpSmoothMaskPeak)+',1.0,0.0)',
                                            overwrite=True)
     
     tmpSmoothMask.done()
@@ -207,3 +215,17 @@ def calcMask(residImage, maskThreshold,smoothKernel,cutThreshold,
                                         
     ia.done()
   
+def addMasks(mask1,mask2,mask3):
+    '''
+    Add masks together to create final mask
+    '''
+
+    ia.open(mask1)
+    ia.close()
+    ia.open(mask2)
+    ia.close()
+
+    tmp = ia.imagecalc(mask3, 'iif('+mask1+'+'+mask2+'>=1.0,1.0,0.0)', overwrite=True)
+
+    tmp.done()
+    ia.done()
