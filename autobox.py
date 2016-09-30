@@ -1,7 +1,7 @@
 from taskinit import * # This gets me the toolkit tasks.
 
 def runTclean(paramList, sidelobeThreshold,floorThreshold, peakThreshold,
-              smoothFactor,cutThreshold, circle=False,verbose=False):
+              smoothFactor,cutThreshold, circle=False,save=False):
     '''
     run clean
     '''
@@ -57,31 +57,44 @@ def runTclean(paramList, sidelobeThreshold,floorThreshold, peakThreshold,
         ## compare various thresholds -- Do I want an absolute value here?
         maskThreshold = max(thresholdList)
         maskThresholdIdx = thresholdList.index(maskThreshold)
-
-        print "Using " + thresholdNameList[maskThresholdIdx] + " threshold: ", maskThreshold
+        
+        casalog.post("Using " + thresholdNameList[maskThresholdIdx] + " threshold: " +  str(maskThreshold), origin='autobox')
 
         # Print out values for all thresholds    
         for (name,value) in zip(thresholdNameList,thresholdList):
-            print name, " threshold is ", value
+            casalog.post( name + " threshold is " + str(value), origin='autobox')
      
         # create a new mask
         maskRoot = 'tmp'
         calcMask(residImage,maskThreshold,smoothKernel,cutThreshold,circle=circle,maskRoot=maskRoot)
 
-        # move things around so that the mask is read
+        # add masks together
         if imager.ncycle > 0:
-            oldMaskImage = maskImage+str(imager.ncycle)
-            shutil.copytree(maskImage,oldMaskImage)
-            addMasks(oldMaskImage,maskRoot+'_final_mask',maskRoot+'_final_mask_sum')
+            addMasks(maskImage+str(imager.ncycle-1),maskRoot+'_final_mask',maskRoot+'_final_mask_sum')
+            casalog.post( 'adding mask '+ maskImage+str(imager.ncycle-1) + ' and ' + maskRoot+'_final_mask',origin='autobox')
             finalMaskImage = maskRoot+'_final_mask_sum'
-        else:
-            finalMaskImage = maskRoot+'_final_mask'
+        else: 
+            finalMaskImage = maskRoot + '_final_mask'
 
         if os.path.exists(maskImage):
             shutil.rmtree(maskImage)
 
+        casalog.post( 'copying ' + finalMaskImage + ' to '+ maskImage, origin='autobox')
         shutil.copytree(finalMaskImage,maskImage)
+        casalog.post( 'copying ' +maskImage + ' to '+ maskImage+str(imager.ncycle),origin='autobox')
+        shutil.copytree(maskImage,maskImage+str(imager.ncycle))
     
+        # save intermediate masks and residuals for diagnostics        
+        if save:
+            shutil.copytree(maskRoot+'_mask',maskRoot+'_mask'+str(imager.ncycle))
+            shutil.copytree(maskRoot+'_smooth_mask',maskRoot+'_smooth_mask'+str(imager.ncycle))
+            shutil.copytree(maskRoot+'_final_mask',maskRoot+'_final_mask'+str(imager.ncycle))
+            if imager.ncycle > 0:
+                shutil.copytree(maskRoot+'_final_mask_sum',maskRoot+'_final_mask_sum'+str(imager.ncycle))
+            shutil.copytree(residImage,residImage+str(imager.ncycle))
+
+
+
         imager.runMinorCycle() 
         imager.runMajorCycle()
         
@@ -193,7 +206,7 @@ def calcMask(residImage, maskThreshold,smoothKernel,cutThreshold,
     minorStr = str(minor)+smoothKernel['minor']['unit']
     paStr = str(pa)+smoothKernel['pa']['unit']
 
-    print "smoothing by " + majorStr + " by " + minorStr
+    casalog.post("smoothing by " + majorStr + " by " + minorStr,origin='autobox')
 
     tmpSmoothMaskName = maskRoot+'_smooth_mask'
     tmpSmoothMask = tmpMask.convolve2d(outfile=tmpSmoothMaskName,axes=[0,1],type='gauss',
