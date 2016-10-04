@@ -1,7 +1,7 @@
 from taskinit import * # This gets me the toolkit tasks.
 
-def runTclean(paramList, sidelobeThreshold,floorThreshold, peakThreshold,
-              smoothFactor,cutThreshold, circle=False,save=False):
+def runTclean(paramList, sidelobeThreshold,noiseThreshold, peakThreshold,
+              smoothFactor,cutThreshold, save=False, minBeamFrac=-1):
     '''
     run clean
     '''
@@ -33,26 +33,30 @@ def runTclean(paramList, sidelobeThreshold,floorThreshold, peakThreshold,
     ## get image names
     (image,psfImage,residImage,maskImage) = getImageNames(paramList)
     
+    ## Make dirty image
+    imager.runMajorCycle()
+
     # determine sidelobe level
     sidelobeLevel = fitPSF(psfImage)
     
-    ## Make dirty image
-    imager.runMajorCycle()
-    
     # calculate size of smoothing beam
     smoothKernel = calcSmooth(psfImage,smoothFactor)
+
+    # determine clean threshold
+    iterPars = paramList.getIterPars()
+    cleanThreshold = float(iterPars['threshold'][0:-2])
     
     ## Do deconvolution and iterations
     while ( not imager.hasConverged() ):
 
         # determine peak of residual
-        residPeak = findResidualPeak(residImage)
-
+        (residPeak, residRMS) = findResidualStats(residImage)
+        
         # calculate thresholds
-        thresholdNameList = ['Sidelobe','Peak','Floor']
+        thresholdNameList = ['Sidelobe','Peak','Noise']
         thresholdList = [sidelobeThreshold*sidelobeLevel*residPeak,
                          peakThreshold*residPeak,
-                         floorThreshold]
+                         max(noiseThreshold*residRMS,cleanThreshold)]
 
         ## compare various thresholds -- Do I want an absolute value here?
         maskThreshold = max(thresholdList)
@@ -64,10 +68,12 @@ def runTclean(paramList, sidelobeThreshold,floorThreshold, peakThreshold,
         for (name,value) in zip(thresholdNameList,thresholdList):
             casalog.post( name + " threshold is " + str(value), origin='autobox')
      
-        # create a new mask
+        # create a new mask. If I need to do pruning, it should be done here.
         maskRoot = 'tmp'
-        calcMask(residImage,maskThreshold,smoothKernel,cutThreshold,circle=circle,maskRoot=maskRoot)
-
+        calcMask(residImage,psfImage,
+                 maskThreshold,smoothKernel,cutThreshold,maskRoot=maskRoot,
+                 minBeamFrac=minBeamFrac)
+        
         # add masks together
         if imager.ncycle > 0:
             addMasks(maskImage+str(imager.ncycle-1),maskRoot+'_final_mask',maskRoot+'_final_mask_sum')
@@ -169,7 +175,7 @@ def calcSmooth(psfImage, smoothFactor):
 
     return beam
         
-def findResidualPeak(residImage):
+def findResidualStats(residImage):
     '''
     calculate the peak of the residual
     '''
@@ -178,10 +184,16 @@ def findResidualPeak(residImage):
     residStats = ia.statistics()
     ia.done()
     residPeak = residStats['max'][0] ## do I want to make this the absolute value of the max/min??
-    return residPeak
+    residRMS = residStats['rms'][0]
 
-def calcMask(residImage, maskThreshold,smoothKernel,cutThreshold,
-             circle=False,maskRoot='tmp'):
+    return (residPeak, residRMS)
+
+
+
+
+def calcMask(residImage,psfImage, maskThreshold,smoothKernel,cutThreshold,
+             minBeamFrac=-1,
+             maskRoot='tmp'):
     '''
     calculate the mask based on the residual image and the mask threshold
     '''
@@ -191,16 +203,16 @@ def calcMask(residImage, maskThreshold,smoothKernel,cutThreshold,
     ia.open(residImage)
     tmpMaskName = maskRoot+'_mask'
     tmpMask = ia.imagecalc(tmpMaskName,'iif('+residImage+'>'+str(maskThreshold)+',1.0,0.0)',overwrite=True)
+    ia.done()
+    tmpMask.done()
+
+    if minBeamFrac > 0:
+        casalog.post("pruning regions smaller than " + str(minBeamFrac) + "times the beam size",origin='autobox')
+        pruneRegions(psfImage,tmpMaskName,minBeamFrac)
 
     major = smoothKernel['major']['value']
     minor = smoothKernel['minor']['value']
     pa = smoothKernel['pa']['value']
-
-    if circle:
-        fwhm = major
-        major = fwhm
-        minor = fwhm
-        pa = 0.0
 
     majorStr = str(major)+smoothKernel['major']['unit']
     minorStr = str(minor)+smoothKernel['minor']['unit']
@@ -209,11 +221,10 @@ def calcMask(residImage, maskThreshold,smoothKernel,cutThreshold,
     casalog.post("smoothing by " + majorStr + " by " + minorStr,origin='autobox')
 
     tmpSmoothMaskName = maskRoot+'_smooth_mask'
-    tmpSmoothMask = tmpMask.convolve2d(outfile=tmpSmoothMaskName,axes=[0,1],type='gauss',
+    ia.open(tmpMaskName)
+    tmpSmoothMask = ia.convolve2d(outfile=tmpSmoothMaskName,axes=[0,1],type='gauss',
                                        major=majorStr,minor=minorStr,pa=paStr,
                                        overwrite=True)
-
-    tmpMask.done()
     
     tmpSmoothMaskStats = tmpSmoothMask.statistics()
     tmpSmoothMaskPeak = tmpSmoothMaskStats['max'][0]
@@ -242,3 +253,42 @@ def addMasks(mask1,mask2,mask3):
 
     tmp.done()
     ia.done()
+
+def pruneRegions(psfImage,maskImage,minBeamFrac):
+
+    ''' 
+    code to prune regions that are too small. Based on code in M100 casaguide
+    developed by Crystal Brogan and Jen Donovan Meyer.
+    '''
+
+    import scipy.ndimage
+    import analysisUtils as au
+
+    # get beam area in pixels using analysis utils
+    beamArea = au.pixelsPerBeam(psfImage) 
+    npix = beamArea * minBeamFrac
+    
+    # open image and get mask
+    ia.open(maskImage)
+    mask = ia.getchunk()
+    
+    # divide the mask up into labeled regions
+    labeled, j = scipy.ndimage.label(mask)
+    myhistogram = scipy.ndimage.measurements.histogram(labeled,0,j+1,j+1)
+    object_slices = scipy.ndimage.find_objects(labeled)
+
+    # go through each region and set the mask to 0 if there aren't enough pixels
+    nremoved = 0
+    for i in range(j):
+        if myhistogram[i+1] < npix:
+            mask[object_slices[i]] = 0
+            nremoved =+ 1
+
+    casalog.post("removed " + str(nremoved) + " regions",origin='autobox')
+
+    # put the mask back
+    ia.putchunk(mask)
+    ia.done()
+    
+
+
