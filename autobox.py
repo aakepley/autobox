@@ -15,6 +15,8 @@ def runTclean(paramList, sidelobeThreshold,noiseThreshold, peakThreshold,
     from refimagerhelper import PySynthesisImager
     from refimagerhelper import ImagerParameters, PerformanceMeasure
 
+    import analyzemsimage
+
     paramList.printParameters()
 
     imager = PySynthesisImager(params=paramList)
@@ -31,7 +33,7 @@ def runTclean(paramList, sidelobeThreshold,noiseThreshold, peakThreshold,
     imager.makePB()
     
     ## get image names
-    (image,psfImage,residImage,maskImage) = getImageNames(paramList)
+    (image,psfImage,residImage,maskImage,pbImage) = getImageNames(paramList)
     
     ## Make dirty image
     imager.runMajorCycle()
@@ -45,18 +47,25 @@ def runTclean(paramList, sidelobeThreshold,noiseThreshold, peakThreshold,
     # determine clean threshold
     iterPars = paramList.getIterPars()
     cleanThreshold = float(iterPars['threshold'][0:-2])
-    
+    normPars = paramList.getNormPars()
+    pbLevel = normPars['0']['pblimit']
+
     ## Do deconvolution and iterations
     while ( not imager.hasConverged() ):
 
-        # determine peak of residual
+        # determine peak and RMS of residual image
         (residPeak, residRMS) = findResidualStats(residImage)
         
-        # calculate thresholds
+        # determine noise in image outside mask. might want to do this earlier in findResidual Stats
+        imageStats = analyzemsimage.runImstat(residImage,pbImage,Mask=maskImage,level=pbLevel)
+        imageRMS = imageStats['medabsdevmed'][0] * 1.4826
+
+        # calculate thresholds -- I've switched to using imageRMS
+        # here, but could go back to residual rms.
         thresholdNameList = ['Sidelobe','Peak','Noise']
         thresholdList = [sidelobeThreshold*sidelobeLevel*residPeak,
                          peakThreshold*residPeak,
-                         max(noiseThreshold*residRMS,cleanThreshold)]
+                         max(noiseThreshold*imageRMS,cleanThreshold)] 
 
         ## compare various thresholds -- Do I want an absolute value here?
         maskThreshold = max(thresholdList)
@@ -99,8 +108,6 @@ def runTclean(paramList, sidelobeThreshold,noiseThreshold, peakThreshold,
                 shutil.copytree(maskRoot+'_final_mask_sum',maskRoot+'_final_mask_sum'+str(imager.ncycle))
             shutil.copytree(residImage,residImage+str(imager.ncycle))
 
-
-
         imager.runMinorCycle() 
         imager.runMajorCycle()
         
@@ -121,10 +128,12 @@ def getImageNames(paramList):
         image = paramList.alldecpars['0']['imagename']+'.image'
         psfImage = paramList.alldecpars['0']['imagename']+'.psf'
         residImage = paramList.alldecpars['0']['imagename']+'.residual'
+        pbImage = paramList.alldecpars['0']['imagename']+'.pb'
     else:
         image = paramList.alldecpars['0']['imagename']+'.image.tt0'
         psfImage = paramList.alldecpars['0']['imagename']+'.psf.tt0'
         residImage = paramList.alldecpars['0']['imagename']+'.residual.tt0'
+        pbImage = paramList.alldecpars['0']['imagename']+'.pb.tt0'
 
     #get name of current mask
     if paramList.alldecpars['0']['mask']:
@@ -132,7 +141,7 @@ def getImageNames(paramList):
     else:
         maskImage = paramList.alldecpars['0']['imagename']+'.mask'
 
-    return (image,psfImage,residImage,maskImage)
+    return (image,psfImage,residImage,maskImage,pbImage)
 
 def fitPSF(psfname,boxpixels=20):
     '''
@@ -181,12 +190,18 @@ def findResidualStats(residImage):
     '''
 
     ia.open(residImage)
-    residStats = ia.statistics()
+    residStats = ia.statistics(robust=True)
     ia.done()
     residPeak = residStats['max'][0] ## do I want to make this the absolute value of the max/min??
-    residRMS = residStats['rms'][0]
+    #residRMS = residStats['rms'][0]
+    
+    residRMS = residStats['medabsdevmed'][0] * 1.4826
+
+    casalog.post('Using medabsdev of ' + str(residStats['medabsdevmed'][0]) +  ', which corresponds to sigma of ' + str(residRMS), origin='autobox')
+
 
     return (residPeak, residRMS)
+
 
 
 
@@ -282,7 +297,7 @@ def pruneRegions(psfImage,maskImage,minBeamFrac):
     for i in range(j):
         if myhistogram[i+1] < npix:
             mask[object_slices[i]] = 0
-            nremoved =+ 1
+            nremoved = nremoved + 1
 
     casalog.post("removed " + str(nremoved) + " regions",origin='autobox')
 
