@@ -58,7 +58,10 @@ def runTclean(paramList, sidelobeThreshold,noiseThreshold, peakThreshold,
         
         # determine noise in image outside mask. might want to do this earlier in findResidual Stats
         imageStats = analyzemsimage.runImstat(residImage,pbImage,Mask=maskImage,level=pbLevel)
-        imageRMS = imageStats['medabsdevmed'][0] * 1.4826
+        if len(imageStats['medabsdevmed']) > 0:
+            imageRMS = imageStats['medabsdevmed'][0] * 1.4826
+        else:
+            imageRMS = 0.0
 
         # calculate thresholds -- I've switched to using imageRMS
         # here, but could go back to residual rms.
