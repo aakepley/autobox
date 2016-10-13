@@ -64,9 +64,10 @@ def runTclean(paramList,
 
         # determine peak and RMS of residual image
         (residPeak, residRMS) = findResidualStats(residImage)
-        
-        # determine noise in image outside mask. might want to do this earlier in findResidualStats to clean up code
-        imageStats = analyzemsimage.runImstat(residImage,pbImage,Mask=maskImage,level=pbLevel)
+
+        # determine noise in image in annulus.
+        imageStats = analyzemsimage.imstatAnnulus(residImage,pbimage=pbImage,innerLevel=0.3,outerLevel=0.2,verbose=True)
+
         if len(imageStats['medabsdevmed']) > 0:
             imageRMS = imageStats['medabsdevmed'][0] * 1.4826
         else:
