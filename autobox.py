@@ -1,9 +1,9 @@
-from taskinit import * # This gets me the toolkit tasks.
+from taskinit import * # This gets me CASA toolkit tasks.
 
 def runTclean(paramList, 
-              sidelobeThreshold,lowNoiseThreshold, noiseThreshold, minBeamFrac=-1,
-              peakThreshold, 
-              smoothFactor, cutThreshold,  save=False):
+              sidelobeThreshold,lowNoiseThreshold, noiseThreshold,  
+              smoothFactor, cutThreshold,
+              minBeamFrac=-1):
     '''
     run clean
     '''
@@ -16,12 +16,6 @@ def runTclean(paramList,
     
     from refimagerhelper import PySynthesisImager
     from refimagerhelper import ImagerParameters, PerformanceMeasure
-
-    import analyzemsimage
-
-    # set some defaults 
-    if not lowNoiseThreshold:
-        lowNoiseThreshold = noiseThreshold
 
     paramList.printParameters()
 
@@ -50,46 +44,20 @@ def runTclean(paramList,
     # calculate size of smoothing beam
     smoothKernel = calcSmooth(psfImage,smoothFactor)
 
-    # determine clean threshold
-    iterPars = paramList.getIterPars()
-    cleanThreshold = float(iterPars['threshold'][0:-2])
-    normPars = paramList.getNormPars()
-    pbLevel = normPars['0']['pblimit']
-
-    # initially do not grow masks.
-    growmask = False
-
-    ## Do deconvolution and iterations
+    # Do deconvolution 
     while ( not imager.hasConverged() ):
 
         # determine peak and RMS of residual image
-        (residPeak, residRMS) = findResidualStats(residImage)
+        (residPeak, residRMS) = findResidualStats(residImage,pbImage,annulus=True)
 
-        # determine noise in image in annulus.
-        imageStats = analyzemsimage.imstatAnnulus(residImage,pbimage=pbImage,innerLevel=0.3,outerLevel=0.2,verbose=True)
-
-        if len(imageStats['medabsdevmed']) > 0:
-            imageRMS = imageStats['medabsdevmed'][0] * 1.4826
-        else:
-            imageRMS = 0.0
-
-        # calculate thresholds -- I've switched to using imageRMS
-        # here, but could go back to residual rms.
-        thresholdNameList = ['Sidelobe','Peak','Noise']
+        # calculate thresholds
+        thresholdNameList = ['Sidelobe','Noise']
         thresholdList = [sidelobeThreshold*sidelobeLevel*residPeak,
-                         peakThreshold*residPeak,
-                         noiseThreshold*imageRMS] 
+                         noiseThreshold*residRMS] 
 
-        ## compare various thresholds -- Do I want an absolute value here?
+        # compare the thresholds
         maskThreshold = max(thresholdList)
         maskThresholdIdx = thresholdList.index(maskThreshold)
-        
-        ## set the growth flag if residPeak is below the
-        ## noiseThreshold*imageRMS. Note not setting per minor cycle, setting to OFF, then ON.
-        if ((residPeak < noiseThreshold*imageRMS) and (thresholdNameList[maskThresholdIdx] == 'Noise')):
-            growmask = True
-        
-        lowThreshold = lowNoiseThreshold * imageRMS
 
         casalog.post("Using " + thresholdNameList[maskThresholdIdx] + " threshold: " +  str(maskThreshold), origin='autobox')
 
@@ -97,49 +65,67 @@ def runTclean(paramList,
         for (name,value) in zip(thresholdNameList,thresholdList):
             casalog.post( name + " threshold is " + str(value), origin='autobox')
 
-        # let user know if growing mask
-        casalog.post("Grow Mask: " + str(growmask),origin='autobox')
+        # Create a new mask if there are residuals above the threshold
+        if (residPeak > maskThreshold): ## THIS NEEDS TO BE CHANGED.
 
-        # create a new mask. If I need to do pruning, it should be done here.
-        maskRoot = 'tmp'
-        calcMask(residImage,psfImage,
-                 maskThreshold,smoothKernel,cutThreshold,maskRoot=maskRoot,
-                 minBeamFrac=minBeamFrac)
-        
-        # add masks together
-        if imager.ncycle > 0:
-            addMasks(maskImage+str(imager.ncycle-1),maskRoot+'_final_mask',maskRoot+'_final_mask_sum')
-            casalog.post( 'adding mask '+ maskImage+str(imager.ncycle-1) + ' and ' + maskRoot+'_final_mask',origin='autobox')
-            finalMaskImage = maskRoot+'_final_mask_sum'
-        else: 
-            finalMaskImage = maskRoot + '_final_mask'
+            casalog.post("Creating a new mask",origin='autobox')
+      
+            # Create a simple threshold mask
+            outMask = 'tmp_mask_thresh'+str(imager.ncycle)
+            calcThresholdMask(residImage,maskThreshold,outMask)
+            
+            # If requested, prune regions that are smaller than the beam
+            if minBeamFrac > 0:
+                casalog.post("pruning regions smaller than " + str(minBeamFrac) + "times the beam size",origin='autobox')
+                inMask=outMask
+                outMask = 'tmp_mask_prune'+str(imager.ncycle)
+                pruneRegions(psfImage,inMask,minBeamFrac,outMask)
 
-        # Grow masks here? I think I want the masks from previous cycles to be present.
-        if growmask:
-            growMask(residImage,finalMaskImage,lowThreshold)
-            finalMaskImage = 'tmp_growmask'
+            # Smooth mask
+            inMask=outMask
+            outMask = 'tmp_mask_smooth'+str(imager.ncycle)
+            smoothMask(inMask,smoothKernel,outMask)
+            
+            # Convert smoothed mask to 1's and 0's
+            inMask = outMask
+            outMask =  'tmp_mask_cut'+str(imager.ncycle)
+            cutMask(inMask,cutThreshold,outMask)
 
-        # moving masks around to make the available for the final clean cycle
+            # Add masks together if this isn't the first cycle
+            if imager.ncycle > 0:
+                inMask = outMask
+                outMask = 'tmp_mask_add'+str(imager.ncycle)
+                addMasks(maskImage+str(imager.ncycle-1),inMask,outMask)
+                casalog.post( 'adding mask '+ maskImage+str(imager.ncycle-1) + ' and ' + inMask,origin='autobox')
+
+        # otherwise, just grow the mask
+        else:
+
+            casalog.post("Growing old mask",origin='autobox')
+
+            # run a binary dilation on the mask from last cycle
+            inMask = maskImage+str(imager.ncycle-1)
+            outMask = 'tmp_mask_growmask'+str(imager.ncycle)
+            lowThreshold = lowNoiseThreshold * residRMS
+            growMask(residImage,inMask,lowThreshold,outMask,iterations=100)
+            
+        # moving masks around to make the right mask available for 
+        # the minor/major cycle
         if os.path.exists(maskImage):
             shutil.rmtree(maskImage)
+        casalog.post( 'copying ' + outMask + ' to '+ maskImage, origin='autobox')
+        shutil.copytree(outMask,maskImage)
 
-        casalog.post( 'copying ' + finalMaskImage + ' to '+ maskImage, origin='autobox')
-        shutil.copytree(finalMaskImage,maskImage)
+        # saving the masks and residuals
         casalog.post( 'copying ' +maskImage + ' to '+ maskImage+str(imager.ncycle),origin='autobox')
         shutil.copytree(maskImage,maskImage+str(imager.ncycle))
+        shutil.copytree(residImage,residImage+str(imager.ncycle))
     
-        # save intermediate masks and residuals for diagnostics        
-        if save:
-            shutil.copytree(maskRoot+'_mask',maskRoot+'_mask'+str(imager.ncycle))
-            shutil.copytree(maskRoot+'_smooth_mask',maskRoot+'_smooth_mask'+str(imager.ncycle))
-            shutil.copytree(maskRoot+'_final_mask',maskRoot+'_final_mask'+str(imager.ncycle))
-            if imager.ncycle > 0:
-                shutil.copytree(maskRoot+'_final_mask_sum',maskRoot+'_final_mask_sum'+str(imager.ncycle))
-            shutil.copytree(residImage,residImage+str(imager.ncycle))
-
+        # run a major minor cycle part
         imager.runMinorCycle() 
         imager.runMajorCycle()
-        
+    
+    # clean up
     imager.restoreImages()
     imager.pbcorImages()
                     
@@ -164,7 +150,7 @@ def getImageNames(paramList):
         residImage = paramList.alldecpars['0']['imagename']+'.residual.tt0'
         pbImage = paramList.alldecpars['0']['imagename']+'.pb.tt0'
 
-    #get name of current mask
+    # get name of current mask
     if paramList.alldecpars['0']['mask']:
         maskImage = paramList.alldecpars['0']['mask']
     else:
@@ -213,80 +199,93 @@ def calcSmooth(psfImage, smoothFactor):
 
     return beam
         
-def findResidualStats(residImage):
+def findResidualStats(residImage, pbImage, annulus=True):
     '''
     calculate the peak of the residual
     '''
+
+    import analyzemsimage
+
+    MADtoRMS =  1.4826 # conversion factor between MAD and RMS. Ref: wikipedia
 
     ia.open(residImage)
     residStats = ia.statistics(robust=True)
     ia.done()
     residPeak = residStats['max'][0] ## do I want to make this the absolute value of the max/min??
-    #residRMS = residStats['rms'][0]
     
-    residRMS = residStats['medabsdevmed'][0] * 1.4826
+    # calculate RMS in annulus
+    if annulus:
 
-    casalog.post('Using medabsdev of ' + str(residStats['medabsdevmed'][0]) +  ', which corresponds to sigma of ' + str(residRMS), origin='autobox')
+        imageStats = analyzemsimage.imstatAnnulus(residImage,pbimage=pbImage,innerLevel=0.3,outerLevel=0.2,verbose=True)
 
+        # if nothing in region set RMS to 0.0
+        if len(imageStats['medabsdevmed']) > 0:
+            residRMS = imageStats['medabsdevmed'][0] * MADtoRMS
+        else:
+            residRMS = 0.0
+
+    # just calculate the RMS in the whole image
+    else:
+
+        residRMS = residStats['medabsdevmed'][0] * MADtoRMS
+
+    casalog.post('Noise in residual image is ' + str(residRMS), origin='autobox')
 
     return (residPeak, residRMS)
-
-
-
-def calcMask(residImage,psfImage, maskThreshold,smoothKernel,cutThreshold,
-             minBeamFrac=-1,
-             maskRoot='tmp'):
+ 
+def calcThresholdMask(residImage,maskThreshold,outMask):
     '''
-
-    calculate the mask based on the residual image and the mask threshold. 
-    
-    This should probably be refactored to make it easier to use. Code
-    is pretty spaghetti line now.
-
+    Calculate the mask based on the residual image and mask threshold
     '''
-
-    import math
 
     ia.open(residImage)
-    tmpMaskName = maskRoot+'_mask'
-    tmpMask = ia.imagecalc(tmpMaskName,'iif('+residImage+'>'+str(maskThreshold)+',1.0,0.0)',overwrite=True)
-    ia.done()
+    tmpMask = ia.imagecalc(outMask,'iif('+residImage+'>'+str(maskThreshold)+',1.0,0.0)',overwrite=True)
     tmpMask.done()
+    ia.done()
+   
+def smoothMask(maskImage, smoothKernel, outMask):
+    '''
+    create a smoothed mask
+    '''
 
-    if minBeamFrac > 0:
-        casalog.post("pruning regions smaller than " + str(minBeamFrac) + "times the beam size",origin='autobox')
-        pruneRegions(psfImage,tmpMaskName,minBeamFrac)
-
-    # smoothing the mask
+    # getting the size of the kernel to smooth by
     major = smoothKernel['major']['value']
     minor = smoothKernel['minor']['value']
     pa = smoothKernel['pa']['value']
 
+    # writing out this info to the log
     majorStr = str(major)+smoothKernel['major']['unit']
     minorStr = str(minor)+smoothKernel['minor']['unit']
     paStr = str(pa)+smoothKernel['pa']['unit']
 
     casalog.post("smoothing by " + majorStr + " by " + minorStr,origin='autobox')
 
-    tmpSmoothMaskName = maskRoot+'_smooth_mask'
-    ia.open(tmpMaskName)
-    tmpSmoothMask = ia.convolve2d(outfile=tmpSmoothMaskName,axes=[0,1],type='gauss',
+    # convolve the mask by the kernel
+    ia.open(maskImage)
+    tmp = ia.convolve2d(outfile=outMask,axes=[0,1],type='gauss',
                                        major=majorStr,minor=minorStr,pa=paStr,
                                        overwrite=True)
-    
-    tmpSmoothMaskStats = tmpSmoothMask.statistics()
-    tmpSmoothMaskPeak = tmpSmoothMaskStats['max'][0]
-    
-    tmpFinalMaskName = maskRoot+'_final_mask'
-    tmpFinalMask = tmpSmoothMask.imagecalc(tmpFinalMaskName,
-                                           'iif('+tmpSmoothMaskName+'>'+str(cutThreshold*tmpSmoothMaskPeak)+',1.0,0.0)',
-                                           overwrite=True)
-    
-    tmpSmoothMask.done()
-    tmpFinalMask.done()
-                                        
+    tmp.done()
     ia.done()
-  
+
+   
+def cutMask(maskImage,cutThreshold, outMask):
+    '''
+    convert smoothed mask to 1/0
+    '''
+
+    ia.open(maskImage)
+    maskStats = ia.statistics()
+    maskPeak = maskStats['max'][0]
+
+    tmp = ia.imagecalc(outMask,
+                       'iif('+maskImage+'>'+str(cutThreshold*maskPeak)+',1.0,0.0)',
+                                           overwrite=True)
+
+    ia.done()
+    tmp.done()
+
+    
 def addMasks(mask1,mask2,mask3):
     '''
     Add masks together to create final mask
@@ -302,7 +301,7 @@ def addMasks(mask1,mask2,mask3):
     tmp.done()
     ia.done()
 
-def pruneRegions(psfImage,maskImage,minBeamFrac):
+def pruneRegions(psfImage,maskImage,minBeamFrac,outMask):
 
     ''' 
     code to prune regions that are too small. Based on code in M100 casaguide
@@ -319,7 +318,8 @@ def pruneRegions(psfImage,maskImage,minBeamFrac):
     # open image and get mask
     ia.open(maskImage)
     mask = ia.getchunk()
-    
+    ia.done()
+
     # divide the mask up into labeled regions
     labeled, j = scipy.ndimage.label(mask)
     myhistogram = scipy.ndimage.measurements.histogram(labeled,0,j+1,j+1)
@@ -335,10 +335,12 @@ def pruneRegions(psfImage,maskImage,minBeamFrac):
     casalog.post("removed " + str(nremoved) + " regions",origin='autobox')
 
     # put the mask back
-    ia.putchunk(mask)
+    tmp = ia.newimagefromimage(infile=maskImage,outfile=outMask,overwrite=True)
+    tmp.putchunk(mask)
+    tmp.done()
     ia.done()
     
-def growMask(residImage,maskImage,lowThreshold,iterations=10):
+def growMask(residImage,maskImage,lowThreshold, outMask, iterations=10):
 
     ''' 
     grow mask through binary dilation
@@ -365,7 +367,7 @@ def growMask(residImage,maskImage,lowThreshold,iterations=10):
     growMask = binary_dilation(highMask,structure=struct,iterations=iterations,mask=lowMask).astype(highMask.dtype)
 
     # saving the new mask
-    tmp = ia.newimagefromimage(infile=maskImage,outfile='tmp_growmask',overwrite=True)
+    tmp = ia.newimagefromimage(infile=maskImage,outfile=outMask,overwrite=True)
     tmp.putchunk(growMask)
     tmp.done()
     ia.done()
