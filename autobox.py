@@ -59,52 +59,51 @@ def runTclean(paramList,
         maskThreshold = max(thresholdList)
         maskThresholdIdx = thresholdList.index(maskThreshold)
 
+        #maskThreshold = thresholdList[0]
+        #maskThresholdIdx = 0
+
         casalog.post("Using " + thresholdNameList[maskThresholdIdx] + " threshold: " +  str(maskThreshold), origin='autobox')
 
         # Print out values for all thresholds    
         for (name,value) in zip(thresholdNameList,thresholdList):
             casalog.post( name + " threshold is " + str(value), origin='autobox')
-
-        # Create a new mask if there are residuals above the threshold
-        if (residPeak > maskThreshold): ## THIS NEEDS TO BE CHANGED.
-
-            casalog.post("Creating a new mask",origin='autobox')
+        casalog.post("Creating a new mask",origin='autobox')
       
-            # Create a simple threshold mask
-            outMask = 'tmp_mask_thresh'+str(imager.ncycle)
-            calcThresholdMask(residImage,maskThreshold,outMask)
-            
-            # If requested, prune regions that are smaller than the beam
-            if minBeamFrac > 0:
-                casalog.post("pruning regions smaller than " + str(minBeamFrac) + "times the beam size",origin='autobox')
-                inMask=outMask
-                outMask = 'tmp_mask_prune'+str(imager.ncycle)
-                pruneRegions(psfImage,inMask,minBeamFrac,outMask)
-
-            # Smooth mask
+        # Create a simple threshold mask
+        outMask = 'tmp_mask_thresh'+str(imager.ncycle)
+        calcThresholdMask(residImage,maskThreshold,outMask)
+        
+        # If requested, prune regions that are smaller than the beam
+        if minBeamFrac > 0:
+            casalog.post("pruning regions smaller than " + str(minBeamFrac) + "times the beam size",origin='autobox')
             inMask=outMask
-            outMask = 'tmp_mask_smooth'+str(imager.ncycle)
-            smoothMask(inMask,smoothKernel,outMask)
+            outMask = 'tmp_mask_prune'+str(imager.ncycle)
+            pruneRegions(psfImage,inMask,minBeamFrac,outMask)
             
-            # Convert smoothed mask to 1's and 0's
+        # Smooth mask
+        inMask=outMask
+        outMask = 'tmp_mask_smooth'+str(imager.ncycle)
+        smoothMask(inMask,smoothKernel,outMask)
+        
+        # Convert smoothed mask to 1's and 0's
+        inMask = outMask
+        outMask =  'tmp_mask_cut'+str(imager.ncycle)
+        cutMask(inMask,cutThreshold,outMask)
+        
+        # Add masks together if this isn't the first cycle
+        if imager.ncycle > 0:
             inMask = outMask
-            outMask =  'tmp_mask_cut'+str(imager.ncycle)
-            cutMask(inMask,cutThreshold,outMask)
-
-            # Add masks together if this isn't the first cycle
-            if imager.ncycle > 0:
-                inMask = outMask
-                outMask = 'tmp_mask_add'+str(imager.ncycle)
-                addMasks(maskImage+str(imager.ncycle-1),inMask,outMask)
-                casalog.post( 'adding mask '+ maskImage+str(imager.ncycle-1) + ' and ' + inMask,origin='autobox')
-
-        # otherwise, just grow the mask
-        else:
+            outMask = 'tmp_mask_add'+str(imager.ncycle)
+            addMasks(maskImage+str(imager.ncycle-1),inMask,outMask)
+            casalog.post( 'adding mask '+ maskImage+str(imager.ncycle-1) + ' and ' + inMask,origin='autobox')
+                
+        # if the residual peak is less than the noise threshold grow out the mask to the lower contour.
+        if (residPeak < maskThreshold):  #This condition may also be triggered whe the noiseThreshold is triggered
 
             casalog.post("Growing old mask",origin='autobox')
 
             # run a binary dilation on the mask from last cycle
-            inMask = maskImage+str(imager.ncycle-1)
+            inMask = outMask
             outMask = 'tmp_mask_growmask'+str(imager.ncycle)
             lowThreshold = lowNoiseThreshold * residRMS
             growMask(residImage,inMask,lowThreshold,outMask,iterations=100)
