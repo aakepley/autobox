@@ -51,63 +51,82 @@ def runTclean(paramList,
         (residPeak, residRMS) = findResidualStats(residImage,pbImage,annulus=True)
 
         # calculate thresholds
-        thresholdNameList = ['Sidelobe','Noise']
-        thresholdList = [sidelobeThreshold*sidelobeLevel*residPeak,
-                         noiseThreshold*residRMS] 
+        sidelobeThresholdValue = sidelobeThreshold*sidelobeLevel*residPeak
+        noiseThresholdValue = noiseThreshold*residRMS
 
-        # compare the thresholds
+        thresholdNameList = ['sidelobe','noise']
+        thresholdList = [sidelobeThresholdValue, noiseThresholdValue]
+
         maskThreshold = max(thresholdList)
         maskThresholdIdx = thresholdList.index(maskThreshold)
-
-        #maskThreshold = thresholdList[0]
+        #maskThreshold = sidelobeThresholdValue
         #maskThresholdIdx = 0
 
+        # report what threshold we're using.
         casalog.post("Using " + thresholdNameList[maskThresholdIdx] + " threshold: " +  str(maskThreshold), origin='autobox')
 
         # Print out values for all thresholds    
         for (name,value) in zip(thresholdNameList,thresholdList):
             casalog.post( name + " threshold is " + str(value), origin='autobox')
-        casalog.post("Creating a new mask",origin='autobox')
-      
-        # Create a simple threshold mask
-        outMask = 'tmp_mask_thresh'+str(imager.ncycle)
-        calcThresholdMask(residImage,maskThreshold,outMask)
-        
-        # If requested, prune regions that are smaller than the beam
-        if minBeamFrac > 0:
-            casalog.post("pruning regions smaller than " + str(minBeamFrac) + "times the beam size",origin='autobox')
+
+        if (residPeak > maskThreshold):
+
+            casalog.post("Creating a new mask",origin='autobox')
+
+            # Create a simple threshold mask
+            outMask = 'tmp_mask_thresh'+str(imager.ncycle)
+            calcThresholdMask(residImage,maskThreshold,outMask)
+            
+            # If requested, prune regions that are smaller than the beam
+            if minBeamFrac > 0:
+                casalog.post("pruning regions smaller than " + str(minBeamFrac) + "times the beam size",origin='autobox')
+                inMask=outMask
+                outMask = 'tmp_mask_prune'+str(imager.ncycle)
+                pruneRegions(psfImage,inMask,minBeamFrac,outMask)
+
+            # Smooth mask
             inMask=outMask
-            outMask = 'tmp_mask_prune'+str(imager.ncycle)
-            pruneRegions(psfImage,inMask,minBeamFrac,outMask)
+            outMask = 'tmp_mask_smooth'+str(imager.ncycle)
+            smoothMask(inMask,smoothKernel,outMask)
             
-        # Smooth mask
-        inMask=outMask
-        outMask = 'tmp_mask_smooth'+str(imager.ncycle)
-        smoothMask(inMask,smoothKernel,outMask)
-        
-        # Convert smoothed mask to 1's and 0's
-        inMask = outMask
-        outMask =  'tmp_mask_cut'+str(imager.ncycle)
-        cutMask(inMask,cutThreshold,outMask)
-        
-        # Add masks together if this isn't the first cycle
-        if imager.ncycle > 0:
+            # Convert smoothed mask to 1's and 0's
             inMask = outMask
-            outMask = 'tmp_mask_add'+str(imager.ncycle)
-            addMasks(maskImage+str(imager.ncycle-1),inMask,outMask)
-            casalog.post( 'adding mask '+ maskImage+str(imager.ncycle-1) + ' and ' + inMask,origin='autobox')
-                
-        # if the residual peak is less than the noise threshold grow out the mask to the lower contour.
-        if (residPeak < maskThreshold):  #This condition may also be triggered whe the noiseThreshold is triggered
+            outMask =  'tmp_mask_cut'+str(imager.ncycle)
+            cutMask(inMask,cutThreshold,outMask)
+        
+            # Add masks together if this isn't the first cycle
+            if imager.ncycle > 0:
+                inMask = outMask
+                outMask = 'tmp_mask_add'+str(imager.ncycle)
+                addMasks(maskImage+str(imager.ncycle-1),inMask,outMask)
+                casalog.post( 'adding mask '+ maskImage+str(imager.ncycle-1) + ' and ' + inMask,origin='autobox')
 
-            casalog.post("Growing old mask",origin='autobox')
+        else: # change to elif (imager.ncycle >0)?
 
-            # run a binary dilation on the mask from last cycle
-            inMask = outMask
+            #import pdb
+            #pdb.set_trace()
+
+            lowThreshold = max(lowNoiseThreshold * residRMS, sidelobeThresholdValue) 
+
+            # creating the constraint mask
+            outConstraintMask = 'tmp_mask_constraint' + str(imager.ncycle)
+            calcThresholdMask(residImage,lowThreshold,outConstraintMask)
+
+            # run a binary dilation on the mask 
+            inMask = maskImage+str(imager.ncycle-1)
             outMask = 'tmp_mask_growmask'+str(imager.ncycle)
-            lowThreshold = lowNoiseThreshold * residRMS
-            growMask(residImage,inMask,lowThreshold,outMask,iterations=100)
+            growMask(inMask,outConstraintMask,outMask,iterations=100)
             
+            # Smooth the constraint mask
+            inMask=outMask
+            outMask = 'tmp_mask_grow_smooth'+str(imager.ncycle)
+            smoothMask(inMask,smoothKernel,outMask)
+            
+            # Convert the smoothed constraint mask to 1's and 0's
+            inMask = outMask
+            outMask =  'tmp_mask_cut'+str(imager.ncycle)
+            cutMask(inMask,cutThreshold,outMask)
+
         # moving masks around to make the right mask available for 
         # the minor/major cycle
         if os.path.exists(maskImage):
@@ -339,7 +358,7 @@ def pruneRegions(psfImage,maskImage,minBeamFrac,outMask):
     tmp.done()
     ia.done()
     
-def growMask(residImage,maskImage,lowThreshold, outMask, iterations=10):
+def growMask(maskImage, constraintMask, outMask, iterations=10):
 
     ''' 
     grow mask through binary dilation
@@ -349,21 +368,19 @@ def growMask(residImage,maskImage,lowThreshold, outMask, iterations=10):
     from scipy.ndimage import binary_dilation, generate_binary_structure
     import numpy as np
 
-    # getting the residual image and the existing mask
-    ia.open(residImage)
-    residArray = ia.getchunk(dropdeg=True)
-    ia.close()
+    # getting the residual image and the existing mask   
     ia.open(maskImage)
     highMask = ia.getchunk(dropdeg=True)
     ia.close()
-    ia.done()
     
-    # setting the lower contour mask
-    lowMask = residArray > lowThreshold
+    ia.open(constraintMask)
+    constraintArray = ia.getchunk(dropdeg=True)
+    ia.close()
+    ia.done()
 
     # dilating the binary mask into the low contour
     struct = generate_binary_structure(2,1).astype(highMask.dtype)
-    growMask = binary_dilation(highMask,structure=struct,iterations=iterations,mask=lowMask).astype(highMask.dtype)
+    growMask = binary_dilation(highMask,structure=struct,iterations=iterations,mask=constraintArray).astype(highMask.dtype)
 
     # saving the new mask
     tmp = ia.newimagefromimage(infile=maskImage,outfile=outMask,overwrite=True)
