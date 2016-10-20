@@ -15,19 +15,18 @@ from refimagerhelper import ImagerParameters, PerformanceMeasure
 #### Autoboxing parameters
 #####################################################
 
-peakThreshold = 0.5 # N times peak residual.
-
 # smoothing 
 smoothFactor = 1.0 # smooth by this beam size
 cutThreshold = 0.01 # cut from peak
 
-# threshold
-sidelobeThreshold = 3 # N times sidelobe level
-floorThreshold = 0.000372165076315 *(1.5/4.0) #Jy
-noiseThreshold = 5.0 # factor to multiply RMS by for floor threshold.
+# thresholds
+sidelobeThreshold = 5 # N times sidelobe level
+noiseThreshold = 3.0 # factor to multiply RMS by for floor threshold.
+lowNoiseThreshold = 2.0
+cleanThreshold = 0.000372165076315 *(1.5/4.0) #Jy
 
 # pruning
-minBeamFrac=0.5
+minBeamFrac=0.3
 
 # name root
 nameRoot = 'NGC1068'
@@ -41,7 +40,7 @@ myvislist = ['uid___A002_Xa5df2c_X807f.ms', 'uid___A002_Xaab3b0_X118d.ms']
 #####################################################
 
 
-currentImageName = nameRoot + '_pT'+str(peakThreshold) + '_smoT' + str(smoothFactor) + '_cutT' + str(cutThreshold)
+currentImageName = nameRoot + '_sT'+str(sidelobeThreshold) + '_nT'+str(noiseThreshold) + '_lowT'+str(lowNoiseThreshold) + '_smoT' + str(smoothFactor) + '_cutT' + str(cutThreshold)
 
 print '***************creating ' + currentImageName + '***************'
 
@@ -76,7 +75,7 @@ paramList = ImagerParameters(
     
     ### Deconvolution
     niter=600000,
-    threshold=str(floorThreshold)+'Jy',
+    threshold=str(cleanThreshold)+'Jy',
     interactive=False,
     
     deconvolver='hogbom',
@@ -93,15 +92,12 @@ paramList = ImagerParameters(
     #autoadjust=autoadjust,
 )
 
-
-
-
 autobox.runTclean(paramList,sidelobeThreshold=sidelobeThreshold,
                   noiseThreshold=noiseThreshold,
-                  peakThreshold=peakThreshold,
+                  lowNoiseThrehsold=lowNoiseThreshold,
                   smoothFactor=smoothFactor,
                   cutThreshold=cutThreshold,
-                  save=True,minBeamFrac=minBeamFrac)
+                  minBeamFrac=minBeamFrac)
     
 
 

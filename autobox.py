@@ -40,13 +40,107 @@ def runTclean(paramList,
 
     # determine sidelobe level
     sidelobeLevel = fitPSF(psfImage)
+
+    casalog.post("Fractional Sidelobe Level: " + str(sidelobeLevel),origin='autobox')
     
     # calculate size of smoothing beam
     smoothKernel = calcSmooth(psfImage,smoothFactor)
 
     # Do deconvolution 
-    while ( not checkConvergeAndMakeMask(imager,residImage,psfImage,pbImage,maskImage, sidelobeThreshold,sidelobeLevel,noiseThreshold,lowNoiseThreshold,minBeamFrac,smoothKernel,cutThreshold) ):
+    while ( not imager.hasConverged()):
+        
+        # determine peak and RMS of residual image
+        (residPeak, residRMS) = findResidualStats(residImage,pbImage,annulus=True)
     
+        casalog.post("Peak Residual: " + str(residPeak),origin='autobox')
+        casalog.post("Residual RMS: " + str(residRMS),origin='autobox')
+
+        # calculate thresholds
+        sidelobeThresholdValue = sidelobeThreshold*sidelobeLevel*residPeak
+        noiseThresholdValue = noiseThreshold*residRMS
+
+        thresholdNameList = ['sidelobe','noise']
+        thresholdList = [sidelobeThresholdValue, noiseThresholdValue]
+
+        maskThreshold = max(thresholdList)
+        maskThresholdIdx = thresholdList.index(maskThreshold)
+
+        # report what threshold we're using.
+        casalog.post("Using " + thresholdNameList[maskThresholdIdx] + " threshold: " +  str(maskThreshold), origin='autobox')
+
+        # Print out values for all thresholds    
+        for (name,value) in zip(thresholdNameList,thresholdList):
+            casalog.post( name + " threshold is " + str(value), origin='autobox')
+
+        if (residPeak > maskThreshold):
+            casalog.post("Creating a new mask",origin='autobox')
+
+            # Create a simple threshold mask
+            outMask = 'tmp_mask_thresh'+str(imager.ncycle)
+            calcThresholdMask(residImage,maskThreshold,outMask)
+            
+            # If requested, prune regions that are smaller than the beam
+            if minBeamFrac > 0:
+                casalog.post("pruning regions smaller than " + str(minBeamFrac) + "times the beam size",origin='autobox')
+                inMask=outMask
+                outMask = 'tmp_mask_prune'+str(imager.ncycle)
+                pruneRegions(psfImage,inMask,minBeamFrac,outMask)
+
+            # Smooth mask
+            inMask=outMask
+            outMask = 'tmp_mask_smooth'+str(imager.ncycle)
+            smoothMask(inMask,smoothKernel,outMask)
+            
+            # Convert smoothed mask to 1's and 0's
+            inMask = outMask
+            outMask =  'tmp_mask_cut'+str(imager.ncycle)
+            cutMask(inMask,cutThreshold,outMask)
+            
+            # Add masks together if this isn't the first cycle
+            if imager.ncycle > 0:
+                inMask = outMask
+                outMask = 'tmp_mask_add'+str(imager.ncycle)
+                addMasks(maskImage+str(imager.ncycle-1),inMask,outMask)
+                casalog.post( 'adding mask '+ maskImage+str(imager.ncycle-1) + ' and ' + inMask,origin='autobox')
+
+        else: # change to elif (imager.ncycle >0)?
+        
+            #import pdb
+            #pdb.set_trace()
+            
+            lowThreshold = max(lowNoiseThreshold * residRMS, sidelobeThresholdValue) 
+        
+            # creating the constraint mask
+            outConstraintMask = 'tmp_mask_constraint' + str(imager.ncycle)
+            calcThresholdMask(residImage,lowThreshold,outConstraintMask)
+        
+            # run a binary dilation on the mask 
+            inMask = maskImage+str(imager.ncycle-1)
+            outMask = 'tmp_mask_growmask'+str(imager.ncycle)
+            growMask(inMask,outConstraintMask,outMask,iterations=100)
+            
+            # Smooth the constraint mask
+            inMask=outMask
+            outMask = 'tmp_mask_grow_smooth'+str(imager.ncycle)
+            smoothMask(inMask,smoothKernel,outMask)
+        
+            # Convert the smoothed constraint mask to 1's and 0's
+            inMask = outMask
+            outMask =  'tmp_mask_cut'+str(imager.ncycle)
+            cutMask(inMask,cutThreshold,outMask)
+
+        # moving masks around to make the right mask available for 
+        # the minor/major cycle
+        if os.path.exists(maskImage):
+            shutil.rmtree(maskImage)
+        casalog.post( 'copying ' + outMask + ' to '+ maskImage, origin='autobox')
+        shutil.copytree(outMask,maskImage)
+
+        # saving the masks and residuals
+        casalog.post( 'copying ' +maskImage + ' to '+ maskImage+str(imager.ncycle),origin='autobox')
+        shutil.copytree(maskImage,maskImage+str(imager.ncycle))
+        shutil.copytree(residImage,residImage+str(imager.ncycle))
+
         # run a major minor cycle part
         imager.runMinorCycle() 
         imager.runMajorCycle()
@@ -57,110 +151,6 @@ def runTclean(paramList,
                     
     ## Close tools.
     imager.deleteTools() 
-
-
-def checkConvergeAndMakeMask(imager,residImage,psfImage,pbImage,maskImage,
-                             sidelobeThreshold,sidelobeLevel,noiseThreshold,lowNoiseThreshold,
-                             minBeamFrac,smoothKernel,cutThreshold):
-    
-    import shutil
-    import os
-
-    # determine peak and RMS of residual image
-    (residPeak, residRMS) = findResidualStats(residImage,pbImage,annulus=True)
-    
-    # calculate thresholds
-    sidelobeThresholdValue = sidelobeThreshold*sidelobeLevel*residPeak
-    noiseThresholdValue = noiseThreshold*residRMS
-
-    thresholdNameList = ['sidelobe','noise']
-    thresholdList = [sidelobeThresholdValue, noiseThresholdValue]
-
-    maskThreshold = max(thresholdList)
-    maskThresholdIdx = thresholdList.index(maskThreshold)
-    #maskThreshold = sidelobeThresholdValue
-    #maskThresholdIdx = 0
-
-    # report what threshold we're using.
-    casalog.post("Using " + thresholdNameList[maskThresholdIdx] + " threshold: " +  str(maskThreshold), origin='autobox')
-
-    # Print out values for all thresholds    
-    for (name,value) in zip(thresholdNameList,thresholdList):
-        casalog.post( name + " threshold is " + str(value), origin='autobox')
-
-    if (residPeak > maskThreshold):
-
-        casalog.post("Creating a new mask",origin='autobox')
-
-        # Create a simple threshold mask
-        outMask = 'tmp_mask_thresh'+str(imager.ncycle)
-        calcThresholdMask(residImage,maskThreshold,outMask)
-            
-        # If requested, prune regions that are smaller than the beam
-        if minBeamFrac > 0:
-            casalog.post("pruning regions smaller than " + str(minBeamFrac) + "times the beam size",origin='autobox')
-            inMask=outMask
-            outMask = 'tmp_mask_prune'+str(imager.ncycle)
-            pruneRegions(psfImage,inMask,minBeamFrac,outMask)
-
-        # Smooth mask
-        inMask=outMask
-        outMask = 'tmp_mask_smooth'+str(imager.ncycle)
-        smoothMask(inMask,smoothKernel,outMask)
-            
-        # Convert smoothed mask to 1's and 0's
-        inMask = outMask
-        outMask =  'tmp_mask_cut'+str(imager.ncycle)
-        cutMask(inMask,cutThreshold,outMask)
-        
-        # Add masks together if this isn't the first cycle
-        if imager.ncycle > 0:
-            inMask = outMask
-            outMask = 'tmp_mask_add'+str(imager.ncycle)
-            addMasks(maskImage+str(imager.ncycle-1),inMask,outMask)
-            casalog.post( 'adding mask '+ maskImage+str(imager.ncycle-1) + ' and ' + inMask,origin='autobox')
-
-    else: # change to elif (imager.ncycle >0)?
-        
-        #import pdb
-        #pdb.set_trace()
-        
-        lowThreshold = max(lowNoiseThreshold * residRMS, sidelobeThresholdValue) 
-        
-        # creating the constraint mask
-        outConstraintMask = 'tmp_mask_constraint' + str(imager.ncycle)
-        calcThresholdMask(residImage,lowThreshold,outConstraintMask)
-        
-        # run a binary dilation on the mask 
-        inMask = maskImage+str(imager.ncycle-1)
-        outMask = 'tmp_mask_growmask'+str(imager.ncycle)
-        growMask(inMask,outConstraintMask,outMask,iterations=100)
-            
-        # Smooth the constraint mask
-        inMask=outMask
-        outMask = 'tmp_mask_grow_smooth'+str(imager.ncycle)
-        smoothMask(inMask,smoothKernel,outMask)
-        
-        # Convert the smoothed constraint mask to 1's and 0's
-        inMask = outMask
-        outMask =  'tmp_mask_cut'+str(imager.ncycle)
-        cutMask(inMask,cutThreshold,outMask)
-
-    # moving masks around to make the right mask available for 
-    # the minor/major cycle
-    if os.path.exists(maskImage):
-        shutil.rmtree(maskImage)
-    casalog.post( 'copying ' + outMask + ' to '+ maskImage, origin='autobox')
-    shutil.copytree(outMask,maskImage)
-
-    # saving the masks and residuals
-    casalog.post( 'copying ' +maskImage + ' to '+ maskImage+str(imager.ncycle),origin='autobox')
-    shutil.copytree(maskImage,maskImage+str(imager.ncycle))
-    shutil.copytree(residImage,residImage+str(imager.ncycle))
-
-    # check convergence
-    converged = imager.hasConverged()
-    return converged
 
 
 def getImageNames(paramList):
@@ -194,6 +184,21 @@ def fitPSF(psfname,boxpixels=20):
     value. Code is based on VLASS example code.
     '''
 
+    # select only the central channel if it's a cube
+    # code is from Remy and needs to be tested.
+    #  I might want to do a psf level for each plane of the cube?
+    ia.open(psfname)
+    mycs=ia.coordsys()
+    shape=ia.shape()
+    spax=mycs.findaxisbyname("Spectral")
+    if shape[spax]>1:        
+        psf0=ia.subimage(outfile=psfname+"0",region=rg.frombcs(mycs.torecord(),shape,box="0,0,%i,%i"%(shape[0]-1,shape[1]-1),chans="%i"%int(shape[spax]/2)),overwrite=True)
+        mycs.done()
+        mycs=psf0.coordsys()
+        psf0.done()
+        psfname=psfname+"0"
+    ia.done()
+
     # create residual image
     psfresid = psfname + '.resid'
 
@@ -208,9 +213,11 @@ def fitPSF(psfname,boxpixels=20):
     clrec= psf.fitcomponents(box=blctrc)
     psf.modify(clrec['results'],subtract=True)
     
+    ## add PSF core stuff here??
+
     # find the maximum sidelobe.
-    psfresidimstat=psf.statistics()
-    psfmin=max(abs(psfresidimstat['min'][0]),psfresidimstat['max'][0])
+    psfresidimstat=psf.statistics() # Do this in same box as fix?
+    psfmin=max(abs(psfresidimstat['min'][0]),abs(psfresidimstat['max'][0]))
     psf.done()
 
     return psfmin
