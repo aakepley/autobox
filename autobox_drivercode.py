@@ -94,7 +94,7 @@ paramList = ImagerParameters(
 
 autobox.runTclean(paramList,sidelobeThreshold=sidelobeThreshold,
                   noiseThreshold=noiseThreshold,
-                  lowNoiseThrehsold=lowNoiseThreshold,
+                  lowNoiseThreshold=lowNoiseThreshold,
                   smoothFactor=smoothFactor,
                   cutThreshold=cutThreshold,
                   minBeamFrac=minBeamFrac)
