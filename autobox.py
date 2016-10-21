@@ -50,7 +50,7 @@ def runTclean(paramList,
     while ( not imager.hasConverged()):
         
         # determine peak and RMS of residual image
-        (residPeak, residRMS) = findResidualStats(residImage,pbImage,annulus=True)
+        (residPeak, residRMS) = findResidualStats(residImage,pbImage,annulus=False)
     
         casalog.post("Peak Residual: " + str(residPeak),origin='autobox')
         casalog.post("Residual RMS: " + str(residRMS),origin='autobox')
@@ -59,18 +59,15 @@ def runTclean(paramList,
         sidelobeThresholdValue = sidelobeThreshold*sidelobeLevel*residPeak
         noiseThresholdValue = noiseThreshold*residRMS
 
-        thresholdNameList = ['sidelobe','noise']
-        thresholdList = [sidelobeThresholdValue, noiseThresholdValue]
-
-        maskThreshold = max(thresholdList)
-        maskThresholdIdx = thresholdList.index(maskThreshold)
+        maskThreshold = numpy.maximum(sidelobeThresholdValue,noiseThresholdValue)
+        #maskThresholdIdx = thresholdList.index(maskThreshold)
 
         # report what threshold we're using.
-        casalog.post("Using " + thresholdNameList[maskThresholdIdx] + " threshold: " +  str(maskThreshold), origin='autobox')
+        #casalog.post("Using " + thresholdNameList[maskThresholdIdx] + " threshold: " +  str(maskThreshold), origin='autobox')
 
         # Print out values for all thresholds    
-        for (name,value) in zip(thresholdNameList,thresholdList):
-            casalog.post( name + " threshold is " + str(value), origin='autobox')
+        #for (name,value) in zip(thresholdNameList,thresholdList):
+        #    casalog.post( name + " threshold is " + str(value), origin='autobox')
 
         casalog.post("Creating a new mask",origin='autobox')
         
@@ -246,9 +243,9 @@ def findResidualStats(residImage, pbImage, annulus=True):
     MADtoRMS =  1.4826 # conversion factor between MAD and RMS. Ref: wikipedia
 
     ia.open(residImage)
-    residStats = ia.statistics(robust=True)
+    residStats = ia.statistics(robust=True,axes=[0,1])
     ia.done()
-    residPeak = residStats['max'][0] ## do I want to make this the absolute value of the max/min??
+    residPeak = residStats['max'] ## do I want to make this the absolute value of the max/min??
     
     # calculate RMS in annulus
     if annulus:
@@ -264,7 +261,7 @@ def findResidualStats(residImage, pbImage, annulus=True):
     # just calculate the RMS in the whole image
     else:
 
-        residRMS = residStats['medabsdevmed'][0] * MADtoRMS
+        residRMS = residStats['medabsdevmed'] * MADtoRMS
 
     casalog.post('Noise in residual image is ' + str(residRMS), origin='autobox')
 
@@ -275,11 +272,32 @@ def calcThresholdMask(residImage,maskThreshold,outMask):
     Calculate the mask based on the residual image and mask threshold
     '''
 
+    import numpy as np
+
     ia.open(residImage)
-    tmpMask = ia.imagecalc(outMask,'iif('+residImage+'>'+str(maskThreshold)+',1.0,0.0)',overwrite=True)
-    tmpMask.done()
+    resid = ia.getchunk(dropdeg=True)
     ia.done()
-   
+
+    # add another axis if only RA/Dec
+    if resid.ndim == 2:
+        resid = resid[:,:,np.newaxis]
+    
+    # create mask
+    if resid.ndim == 3:
+        mask = np.zeros(resid.shape)
+        nchan = (resid.shape)[2]        
+        for i in np.arange(nchan):
+            mask[:,:,i] = resid[:,:,i] > maskThreshold[i]
+
+        # save image
+        tmp = ia.newimagefromimage(infile=residImage,outfile=outMask,overwrite=True)
+        
+        # add stokes axis
+        mask=np.expand_dims(mask,axis=2)
+        tmp.putchunk(mask)
+        tmp.done()
+        ia.done()
+
 def smoothMask(maskImage, smoothKernel, outMask):
     '''
     create a smoothed mask
@@ -311,22 +329,41 @@ def cutMask(maskImage,cutThreshold, outMask):
     convert smoothed mask to 1/0
     '''
 
+    import numpy as np
+
     ia.open(maskImage)
-    maskStats = ia.statistics()
-    maskPeak = maskStats['max'][0]
-
-    tmp = ia.imagecalc(outMask,
-                       'iif('+maskImage+'>'+str(cutThreshold*maskPeak)+',1.0,0.0)',
-                                           overwrite=True)
-
+    mask = ia.getchunk(dropdeg=True)
+    maskStats = ia.statistics(axes=[0,1])
+    maskPeak = maskStats['max']
     ia.done()
-    tmp.done()
+
+    # add another axis if only RA/Dec
+    if mask.ndim == 2:
+        mask = mask[:,:,np.newaxis]
+
+    if mask.ndim == 3:
+        newmask = np.zeros(mask.shape)
+        nchan = (newmask.shape)[2]
+        for i in np.arange(nchan):
+            newmask[:,:,i] = mask[:,:,i] > cutThreshold*maskPeak[i]
+        
+        # save image
+        tmp = ia.newimagefromimage(infile=maskImage,outfile=outMask,overwrite=True)
+        newmask = np.expand_dims(newmask,axis=2)
+        tmp.putchunk(newmask)
+        tmp.done()
+        ia.done()
+
+    else: 
+        casalog.post("Don't know now to deal with an image with this number of dimension",origin='autobox')
 
     
 def addMasks(mask1,mask2,mask3):
     '''
     Add masks together to create final mask
     '''
+
+    ## I think this should be okay for cubes. Needs to be tested though.
 
     ia.open(mask1)
     ia.close()
@@ -347,6 +384,7 @@ def pruneRegions(psfImage,maskImage,minBeamFrac,outMask):
 
     import scipy.ndimage
     import analysisUtils as au
+    import numpy as np
 
     # get beam area in pixels using analysis utils
     beamArea = au.pixelsPerBeam(psfImage) 
@@ -354,25 +392,35 @@ def pruneRegions(psfImage,maskImage,minBeamFrac,outMask):
     
     # open image and get mask
     ia.open(maskImage)
-    mask = ia.getchunk()
+    mask = ia.getchunk(dropdeg=True)
     ia.done()
 
-    # divide the mask up into labeled regions
-    labeled, j = scipy.ndimage.label(mask)
-    myhistogram = scipy.ndimage.measurements.histogram(labeled,0,j+1,j+1)
-    object_slices = scipy.ndimage.find_objects(labeled)
+    if mask.ndim == 2:
+        mask = mask[:,:,np.newaxis]
+    
+    nchan = (mask.shape)[2]
+    
+    for k in np.arange(nchan):
+        maskPlane = mask[:,:,k]
+        # divide the mask up into labeled regions
+        labeled, j = scipy.ndimage.label(maskPlane)
+        myhistogram = scipy.ndimage.measurements.histogram(labeled,0,j+1,j+1)
+        object_slices = scipy.ndimage.find_objects(labeled)
 
-    # go through each region and set the mask to 0 if there aren't enough pixels
-    nremoved = 0
-    for i in range(j):
-        if myhistogram[i+1] < npix:
-            mask[object_slices[i]] = 0
-            nremoved = nremoved + 1
+        # go through each region and set the mask to 0 if there aren't enough pixels
+        nremoved = 0
+        for i in range(j):
+            if myhistogram[i+1] < npix:
+                maskPlane[object_slices[i]] = 0
+                nremoved = nremoved + 1
+
+        mask[:,:,k] = maskPlane
 
     casalog.post("removed " + str(nremoved) + " regions",origin='autobox')
 
     # put the mask back
     tmp = ia.newimagefromimage(infile=maskImage,outfile=outMask,overwrite=True)
+    mask = np.expand_dims(mask,axis=2)
     tmp.putchunk(mask)
     tmp.done()
     ia.done()
@@ -397,14 +445,19 @@ def growMask(maskImage, constraintMask, outMask, iterations=10):
     ia.close()
     ia.done()
 
-    # dilating the binary mask into the low contour
-    struct = generate_binary_structure(2,1).astype(highMask.dtype)
+    # dilating the binary mask into the low contour.    
+    # Note that for three dimensional arrays the adjacent channels will be linked.
+    struct = generate_binary_structure(highMask.ndim,1).astype(highMask.dtype) 
     growMask = binary_dilation(highMask,structure=struct,iterations=iterations,mask=constraintArray).astype(highMask.dtype)
-
+    
     # saving the new mask
     tmp = ia.newimagefromimage(infile=maskImage,outfile=outMask,overwrite=True)
+    # assume that if 3d, we have a degenerate stokes before the spex
+    if highMask.ndim > 2:
+        growMask=np.expand_dims(growMask,axis=2)
     tmp.putchunk(growMask)
     tmp.done()
-    ia.done()
+    ia.done()   
 
-        
+
+   
