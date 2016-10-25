@@ -466,22 +466,30 @@ def growMask(maskImage, constraintMask, outMask, iterations=10):
     highMask = ia.getchunk(dropdeg=True)
     ia.close()
     
+    # open the constraintMask
     ia.open(constraintMask)
     constraintArray = ia.getchunk(dropdeg=True)
     ia.close()
     ia.done()
-   
+
+    if highMask.ndim == 2:
+        highMask = highMask[:,:,np.newaxis]
+        constraintArray = constraintArray[:,:,np.newaxis]
+
+    nchan = (highMask.shape)[2]
+    newmask = np.zeros(highMask.shape)
+
     # dilating the binary mask into the low contour.    
-    # Note that for three dimensional arrays the adjacent channels will be linked.
-    struct = generate_binary_structure(highMask.ndim,1).astype(highMask.dtype) 
-    growMask = binary_dilation(highMask,structure=struct,iterations=iterations,mask=constraintArray).astype(highMask.dtype)
-    
+    for k in np.arange(nchan):
+        struct = generate_binary_structure(2,1).astype(highMask.dtype) 
+        newmask[:,:,k] = binary_dilation(highMask[:,:,k],structure=struct,iterations=iterations,mask=constraintArray[:,:,k]).astype(highMask.dtype)
+
     # saving the new mask
     tmp = ia.newimagefromimage(infile=maskImage,outfile=outMask,overwrite=True)
     # assume that if 3d, we have a degenerate stokes before the spex
-    if highMask.ndim > 2:
-        growMask=np.expand_dims(growMask,axis=2)
-    tmp.putchunk(growMask)
+    if newmask.ndim > 2:
+        newmask=np.expand_dims(newmask,axis=2)
+    tmp.putchunk(newmask)
     tmp.done()
     ia.done()   
 
@@ -496,7 +504,7 @@ def copyMask(inMask,outMask):
     ia.close()
 
     ia.open(outMask)
-    ia.putchunk(outMask)
+    ia.putchunk(mask.astype('float'))
     ia.close()
     ia.done()
    
