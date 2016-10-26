@@ -30,7 +30,7 @@ def runTclean(paramList,
     imager.initializeDeconvolvers()
     imager.initializeIterationControl()            
     imager.makePSF()
-    imager.makePB()
+    #imager.makePB()
     
     ## get image names
     (image,psfImage,residImage,maskImage,pbImage) = getImageNames(paramList)
@@ -42,13 +42,16 @@ def runTclean(paramList,
     
     # calculate size of smoothing beam
     smoothKernel = calcSmooth(psfImage,smoothFactor)
+
+    tmp_imager_ncycle  = 0
     
     ## Make dirty image
     imager.runMajorCycle()
-    
+
     # make initial threshold mask
     (maskThreshold, lowMaskThreshold) = calcThresholds(residImage,pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold)
-    thresholdMask = createThresholdMask(residImage,psfImage,maskThreshold,minBeamFrac,smoothKernel,cutThreshold,ncycle=imager.ncycle)
+    #thresholdMask = createThresholdMask(residImage,psfImage,maskThreshold,minBeamFrac,smoothKernel,cutThreshold,ncycle=imager.ncycle)
+    thresholdMask = createThresholdMask(residImage,psfImage,maskThreshold,minBeamFrac,smoothKernel,cutThreshold,ncycle=tmp_imager_ncycle)
     outMask = thresholdMask
 
     # moving masks around to make the right mask available for 
@@ -59,9 +62,10 @@ def runTclean(paramList,
     shutil.copytree(outMask,maskImage)
 
     # saving the masks and residuals
-    casalog.post( 'copying ' +maskImage + ' to '+ maskImage+str(imager.ncycle),origin='autobox')
-    shutil.copytree(maskImage,maskImage+str(imager.ncycle))
-    shutil.copytree(residImage,residImage+str(imager.ncycle))
+    #casalog.post( 'copying ' +maskImage + ' to '+ maskImage+str(imager.ncycle),origin='autobox')
+    #shutil.copytree(maskImage,maskImage+str(imager.ncycle))
+    shutil.copytree(maskImage,maskImage+str(tmp_imager_ncycle))
+    #shutil.copytree(residImage,residImage+str(imager.ncycle))
 
     # Do deconvolution 
     while ( not imager.hasConverged()):
@@ -69,11 +73,14 @@ def runTclean(paramList,
         # run a major minor cycle part
         imager.runMinorCycle() 
         imager.runMajorCycle()
+
+        tmp_imager_ncycle = tmp_imager_ncycle+1 
     
         # make threshold mask
         (maskThreshold, lowMaskThreshold) = calcThresholds(residImage,pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold)
 
-        thresholdMask = createThresholdMask(residImage,psfImage,maskThreshold,minBeamFrac,smoothKernel,cutThreshold,ncycle=imager.ncycle)
+        #thresholdMask = createThresholdMask(residImage,psfImage,maskThreshold,minBeamFrac,smoothKernel,cutThreshold,ncycle=imager.ncycle)
+        thresholdMask = createThresholdMask(residImage,psfImage,maskThreshold,minBeamFrac,smoothKernel,cutThreshold,ncycle=tmp_imager_ncycle)
 
         # figure out if anything was masked in the threshold mask.
         ia.open(thresholdMask)
@@ -82,21 +89,28 @@ def runTclean(paramList,
 
         # if nothing was masked in the threshold mask and the imager cycle 
         # is greater than zero, expand the mask.
-        if ((maskStats['max'][0] < 1) and (imager.ncycle > 0)):
+        #if ((maskStats['max'][0] < 1) and (imager.ncycle > 0)):
+        if ((maskStats['max'][0] < 1) and (tmp_imager_ncycle > 0)):
           
-            outConstraintMask = createThresholdMask(residImage,psfImage,lowMaskThreshold,minBeamFrac,smoothKernel,cutThreshold,ncycle=imager.ncycle)
+            #outConstraintMask = createThresholdMask(residImage,psfImage,lowMaskThreshold,minBeamFrac,smoothKernel,cutThreshold,ncycle=imager.ncycle)
+            outConstraintMask = createThresholdMask(residImage,psfImage,lowMaskThreshold,minBeamFrac,smoothKernel,cutThreshold,ncycle=tmp_imager_ncycle)
            
             # run a binary dilation on the mask 
-            inMask = maskImage + str(imager.ncycle - 1)
-            outMask = 'tmp_mask_grow'+str(imager.ncycle)
+            #inMask = maskImage + str(imager.ncycle - 1)
+            #outMask = 'tmp_mask_grow'+str(imager.ncycle)
+            inMask = maskImage + str(tmp_imager_ncycle)
+            outMask = 'tmp_mask_grow'+str(tmp_imager_ncycle)
             growMask(inMask,outConstraintMask,outMask,iterations=100)
 
         #otherwise, just add the masks together.
-        elif (imager.ncycle > 0): 
+        #elif (imager.ncycle > 0): 
+        elif (tmp_imager_ncycle > 0): 
 
-            previousMask = maskImage + str(imager.ncycle - 1)
+            #previousMask = maskImage + str(imager.ncycle - 1)
+            previousMask = maskImage + str(tmp_imager_ncycle - 1)
             inMask = thresholdMask
-            outMask = 'tmp_mask_add'+str(imager.ncycle)
+            #outMask = 'tmp_mask_add'+str(imager.ncycle)
+            outMask = 'tmp_mask_add'+str(tmp_imager_ncycle)
             addMasks(previousMask,inMask,outMask)
             casalog.post( 'adding mask ' + previousMask + ' and ' + inMask,origin='autobox')
 
@@ -104,14 +118,16 @@ def runTclean(paramList,
         copyMask(outMask,maskImage)
 
         # saving the masks and residuals
-        casalog.post( 'copying ' +maskImage + ' to '+ maskImage+str(imager.ncycle),origin='autobox')
-        shutil.copytree(maskImage,maskImage+str(imager.ncycle))
-        shutil.copytree(residImage,residImage+str(imager.ncycle))
-
+        #casalog.post( 'copying ' +maskImage + ' to '+ maskImage+str(imager.ncycle),origin='autobox')
+        
+        #shutil.copytree(maskImage,maskImage+str(imager.ncycle))
+        shutil.copytree(maskImage,maskImage+str(tmp_imager_ncycle))
+        #shutil.copytree(residImage,residImage+str(imager.ncycle))
+        
 
     # clean up
     imager.restoreImages()
-    imager.pbcorImages()
+    #imager.pbcorImages()
                     
     ## Close tools.
     imager.deleteTools() 
@@ -208,7 +224,7 @@ def calcThresholds(residImage, pbImage, sidelobeThreshold, sidelobeLevel,noiseTh
     import numpy
 
     # determine peak and RMS of residual image
-    (residPeak, residRMS) = findResidualStats(residImage,pbImage,annulus=True)
+    (residPeak, residRMS) = findResidualStats(residImage,pbImage,annulus=False)
     
     casalog.post("Peak Residual: " + str(residPeak),origin='autobox')
     casalog.post("Residual RMS: " + str(residRMS),origin='autobox')
