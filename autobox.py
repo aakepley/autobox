@@ -80,28 +80,19 @@ def runTclean(paramList,
         maskStats = ia.statistics(axes=[0,1])
         ia.done()
         doGrow = maskStats['max'] < 1
-        
-        if (imager.ncycle > 0):
-            previousMask = maskImage + str(imager.ncycle - 1)
-            inMask = thresholdMask
-            outMask = 'tmp_mask_add'+str(imager.ncycle)
-            addMasks(previousMask,inMask,outMask)
-            casalog.post( 'adding mask ' + previousMask + ' and ' + inMask,origin='autobox')
 
-            outConstraintMask = createThresholdMask(residImage,psfImage,lowMaskThreshold,minBeamFrac,smoothKernel,cutThreshold,ncycle=imager.ncycle)
+        outConstraintMask = createThresholdMask(residImage,psfImage,lowMaskThreshold,minBeamFrac,smoothKernel,cutThreshold,ncycle=imager.ncycle)
            
-            # run a binary dilation on the mask 
-            inMask = maskImage + str(imager.ncycle - 1)
-            outMask = 'tmp_mask_grow'+str(imager.ncycle)
-            growMask(inMask,outConstraintMask,outMask,doGrow,iterations=100)
+        # run a binary dilation on the mask 
+        inMask = maskImage + str(imager.ncycle - 1)
+        outMask = 'tmp_mask_grow'+str(imager.ncycle)
+        growMask(inMask,outConstraintMask,outMask,doGrow,iterations=100)
 
-            previousMask = 'tmp_mask_add'+str(imager.ncycle)
-            inMask = outMask
-            outMask = 'tmp_mask_grow_add'+str(imager.ncycle)
-            addMasks(previousMask,inMask,outMask)
-            casalog.post( 'adding mask ' + thresholdMask + ' and ' + inMask,origin='autobox')
+        inMask = outMask
+        outMask = 'tmp_mask_grow_add'+str(imager.ncycle)
+        addMasks(thresholdMask,inMask,outMask)
+        casalog.post( 'adding mask ' + thresholdMask + ' and ' + inMask,origin='autobox')
             
-
         # copy mask into final mask
         copyMask(outMask,maskImage)
 
