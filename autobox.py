@@ -77,22 +77,27 @@ def runTclean(paramList,
 
         # figure out if anything was masked in the threshold mask.
         ia.open(thresholdMask)
-        maskStats = ia.statistics()
+        maskStats = ia.statistics(axes=[0,1])
         ia.done()
+
+        doGrow = maskStats['max'] < 1
 
         # if nothing was masked in the threshold mask and the imager cycle 
         # is greater than zero, expand the mask.
-        if ((maskStats['max'][0] < 1) and (imager.ncycle > 0)):
+        if (imager.ncycle > 0):
           
             outConstraintMask = createThresholdMask(residImage,psfImage,lowMaskThreshold,minBeamFrac,smoothKernel,cutThreshold,ncycle=imager.ncycle)
            
             # run a binary dilation on the mask 
             inMask = maskImage + str(imager.ncycle - 1)
             outMask = 'tmp_mask_grow'+str(imager.ncycle)
-            growMask(inMask,outConstraintMask,outMask,iterations=100)
+            growMask(inMask,outConstraintMask,outMask,doGrow,iterations=100)
 
-        #otherwise, just add the masks together.
-        elif (imager.ncycle > 0): 
+            inMask = outMask
+            outMask = 'tmp_mask_grow_add'+str(imager.ncycle)
+            addMasks(thresholdMask,inMask,outMask)
+            casalog.post( 'adding mask ' + thresholdMask + ' and ' + inMask,origin='autobox')
+        else:
 
             previousMask = maskImage + str(imager.ncycle - 1)
             inMask = thresholdMask
@@ -108,6 +113,9 @@ def runTclean(paramList,
         shutil.copytree(maskImage,maskImage+str(imager.ncycle))
         shutil.copytree(residImage,residImage+str(imager.ncycle))
 
+    # run a final major/minor cycle
+    imager.runMinorCycle() 
+    imager.runMajorCycle()
 
     # clean up
     imager.restoreImages()
@@ -451,7 +459,7 @@ def pruneRegions(psfImage,maskImage,minBeamFrac,outMask):
     tmp.done()
     ia.done()
     
-def growMask(maskImage, constraintMask, outMask, iterations=10):
+def growMask(maskImage, constraintMask, outMask,doGrow, iterations=10):
 
     ''' 
     grow mask through binary dilation
@@ -481,8 +489,11 @@ def growMask(maskImage, constraintMask, outMask, iterations=10):
 
     # dilating the binary mask into the low contour.    
     for k in np.arange(nchan):
-        struct = generate_binary_structure(2,1).astype(highMask.dtype) 
-        newmask[:,:,k] = binary_dilation(highMask[:,:,k],structure=struct,iterations=iterations,mask=constraintArray[:,:,k]).astype(highMask.dtype)
+        if doGrow[k]:
+            struct = generate_binary_structure(2,1).astype(highMask.dtype) 
+            newmask[:,:,k] = binary_dilation(highMask[:,:,k],structure=struct,iterations=iterations,mask=constraintArray[:,:,k]).astype(highMask.dtype)
+        else:
+            newmask[:,:,k] = highMask[:,:,k]
 
     # saving the new mask
     tmp = ia.newimagefromimage(infile=maskImage,outfile=outMask,overwrite=True)
