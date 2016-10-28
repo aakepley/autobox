@@ -17,6 +17,9 @@ def runTclean(paramList,
     from refimagerhelper import PySynthesisImager
     from refimagerhelper import ImagerParameters, PerformanceMeasure
 
+    import analyzemsimage
+    import pdb
+
     paramList.printParameters()
 
     imager = PySynthesisImager(params=paramList)
@@ -80,16 +83,46 @@ def runTclean(paramList,
         maskStats = ia.statistics(axes=[0,1])
         ia.done()
         doGrow = maskStats['max'] < 1
+        
+        #outConstraintMask = createThresholdMask(residImage,psfImage,lowMaskThreshold,minBeamFrac,smoothKernel,cutThreshold,ncycle=imager.ncycle)
 
-        outConstraintMask = createThresholdMask(residImage,psfImage,lowMaskThreshold,minBeamFrac,smoothKernel,cutThreshold,ncycle=imager.ncycle)
-           
+        outConstraintMask = 'tmp_mask_constraint'+str(imager.ncycle)
+        calcThresholdMask(residImage,lowMaskThreshold,outConstraintMask)
+
+        if minBeamFrac > 0:
+            casalog.post("pruning regions smaller than " + str(minBeamFrac) + "times the beam size",origin='autobox')
+            inConstraintMask=outConstraintMask
+            outConstraintMask = 'tmp_mask_prune'+str(imager.ncycle)
+            pruneRegions(psfImage,inConstraintMask,minBeamFrac,outConstraintMask)
+
         # run a binary dilation on the mask 
         inMask = maskImage + str(imager.ncycle - 1)
         outMask = 'tmp_mask_grow'+str(imager.ncycle)
         growMask(inMask,outConstraintMask,outMask,doGrow,iterations=100)
+        
+        subMask = 'tmp_mask_sub'+str(imager.ncycle)
+        # subtract the original mask from the new grown mask
+        subtractMasks(outMask,inMask,subMask)
+
+        # Smooth the subtracted mask
+        inMask = subMask
+        outMask = 'tmp_mask_sub_smooth'+str(imager.ncycle)
+        smoothMask(inMask,smoothKernel,outMask)
+        
+        # Convert smoothed mask to 1's and 0's
+        inMask = outMask
+        outMask =  'tmp_mask_sub_cut'+str(imager.ncycle)
+        cutMask(inMask,cutThreshold,outMask)
+        
+        # add masks
+        previousMask = maskImage + str(imager.ncycle - 1)    
+        inMask = outMask
+        outMask = 'tmp_mask_prev_add'+str(imager.ncycle)
+        addMasks(previousMask,inMask,outMask)
+        casalog.post( 'adding mask ' + previousMask + ' and ' + inMask,origin='autobox')
 
         inMask = outMask
-        outMask = 'tmp_mask_grow_add'+str(imager.ncycle)
+        outMask = 'tmp_mask_sub_add'+str(imager.ncycle)
         addMasks(thresholdMask,inMask,outMask)
         casalog.post( 'adding mask ' + thresholdMask + ' and ' + inMask,origin='autobox')
             
@@ -397,6 +430,27 @@ def addMasks(mask1,mask2,mask3):
     tmp.done()
     ia.done()    
 
+def subtractMasks(mask1,mask2,mask3):
+    '''
+
+    Subtract masks together to create final mask. Once the mask is created,
+    you need to move the mask in and out of the mask file. Copying new
+    images over to the mask file will cause them not to be used.
+
+    Order matters here!!! Mask1 should be the bigger mask.
+
+    '''
+
+    ia.open(mask1)
+    ia.close()
+    ia.open(mask2)
+    ia.close()
+
+    tmp = ia.imagecalc(mask3, 'iif('+mask1+'-'+mask2+'>=1.0,1.0,0.0)', overwrite=True)
+
+    tmp.done()
+    ia.done()    
+
 def pruneRegions(psfImage,maskImage,minBeamFrac,outMask):
 
     ''' 
@@ -447,7 +501,7 @@ def pruneRegions(psfImage,maskImage,minBeamFrac,outMask):
     tmp.done()
     ia.done()
     
-def growMask(maskImage, constraintMask, outMask,doGrow, iterations=10):
+def growMask(maskImage, constraintMask, outMask, doGrow, iterations=10):
 
     ''' 
     grow mask through binary dilation
