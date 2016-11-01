@@ -83,7 +83,7 @@ def runTclean(paramList,
         maskStats = ia.statistics(axes=[0,1])
         ia.done()
         doGrow = maskStats['max'] < 1
-        
+
         outConstraintMask = 'tmp_mask_constraint'+str(imager.ncycle)
         calcThresholdMask(residImage,lowMaskThreshold,outConstraintMask)
       
@@ -91,26 +91,28 @@ def runTclean(paramList,
         prevMask = maskImage + str(imager.ncycle - 1)
         outMask = 'tmp_mask_grow'+str(imager.ncycle)
         growMask(prevMask,outConstraintMask,outMask,doGrow,iterations=100)
-        
+                
+        # multiply the binary dilated mask by the constraint
+        # mask. Returns lowNoiseThreshold mask that is connected to
+        # previous regions. Need this to avoid smoothing things twice.
         inMask = outMask
-        outMask = 'tmp_mask_sub'+str(imager.ncycle)
-        # subtract the original mask from the new grown mask
-        subtractMasks(inMask,prevMask,outMask)
-        
-        if minBeamFrac > 0:
-            casalog.post("pruning regions smaller than " + str(minBeamFrac) + "times the beam size",origin='autobox')
-            inMask = outMask
-            outMask = 'tmp_mask_sub_prune'+str(imager.ncycle)
-            pruneRegions(psfImage,inMask,minBeamFrac,outMask)
+        outMask = 'tmp_mask_grow_multiply'+str(imager.ncycle)
+        multiplyMasks(outConstraintMask,inMask,outMask)
+
+        # if minBeamFrac > 0:
+        #     casalog.post("pruning regions smaller than " + str(minBeamFrac) + "times the beam size",origin='autobox')
+        #     inMask = outMask
+        #     outMask = 'tmp_mask_grow_prune'+str(imager.ncycle)
+        #     pruneRegions(psfImage,inMask,minBeamFrac,outMask)
 
         # Smooth the subtracted mask
         inMask = outMask
-        outMask = 'tmp_mask_sub_smooth'+str(imager.ncycle)
+        outMask = 'tmp_mask_grow_smooth'+str(imager.ncycle)
         smoothMask(inMask,smoothKernel,outMask)
         
         # Convert smoothed mask to 1's and 0's
         inMask = outMask
-        outMask =  'tmp_mask_sub_cut'+str(imager.ncycle)
+        outMask =  'tmp_mask_grow_cut'+str(imager.ncycle)
         cutMask(inMask,cutThreshold,outMask)
         
         # add masks
@@ -121,7 +123,7 @@ def runTclean(paramList,
         casalog.post( 'adding mask ' + previousMask + ' and ' + inMask,origin='autobox')
 
         inMask = outMask
-        outMask = 'tmp_mask_sub_add'+str(imager.ncycle)
+        outMask = 'tmp_mask_threshold_add'+str(imager.ncycle)
         addMasks(thresholdMask,inMask,outMask)
         casalog.post( 'adding mask ' + thresholdMask + ' and ' + inMask,origin='autobox')
             
@@ -236,7 +238,7 @@ def calcThresholds(residImage, pbImage, sidelobeThreshold, sidelobeLevel,noiseTh
     import numpy
 
     # determine peak and RMS of residual image
-    (residPeak, residRMS) = findResidualStats(residImage,pbImage,annulus=True)
+    (residPeak, residRMS) = findResidualStats(residImage,pbImage,annulus=False)
     
     casalog.post("Peak Residual: " + str(residPeak),origin='autobox')
     casalog.post("Residual RMS: " + str(residRMS),origin='autobox')
@@ -450,6 +452,24 @@ def subtractMasks(mask1,mask2,mask3):
     tmp.done()
     ia.done()    
 
+
+def multiplyMasks(mask1,mask2,mask3):
+    '''
+
+    Multiply masks together
+
+    '''
+
+    ia.open(mask1)
+    ia.close()
+    ia.open(mask2)
+    ia.close()
+
+    tmp = ia.imagecalc(mask3, 'iif('+mask1+'*'+mask2+'>=1.0,1.0,0.0)', overwrite=True)
+
+    tmp.done()
+    ia.done()    
+
 def pruneRegions(psfImage,maskImage,minBeamFrac,outMask):
 
     ''' 
@@ -533,8 +553,6 @@ def growMask(maskImage, constraintMask, outMask, doGrow, iterations=10):
         if doGrow[k]:
             struct = generate_binary_structure(2,1).astype(highMask.dtype) 
             newmask[:,:,k] = binary_dilation(highMask[:,:,k],structure=struct,iterations=iterations,mask=constraintArray[:,:,k]).astype(highMask.dtype)
-        else:
-            newmask[:,:,k] = highMask[:,:,k]
 
     # saving the new mask
     tmp = ia.newimagefromimage(infile=maskImage,outfile=outMask,overwrite=True)
