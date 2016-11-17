@@ -99,13 +99,14 @@ def runTclean(paramList,
         outMask = 'tmp_mask_grow_multiply'+str(imager.ncycle)
         multiplyMasks(outConstraintMask,inMask,outMask)
 
-        # if minBeamFrac > 0:
-        #     casalog.post("pruning regions smaller than " + str(minBeamFrac) + "times the beam size",origin='autobox')
-        #     inMask = outMask
-        #     outMask = 'tmp_mask_grow_prune'+str(imager.ncycle)
-        #     pruneRegions(psfImage,inMask,minBeamFrac,outMask)
+        # prune regions smaller than beam
+        if minBeamFrac > 0:
+            casalog.post("pruning regions smaller than " + str(minBeamFrac) + "times the beam size",origin='autobox')
+            inMask = outMask
+            outMask = 'tmp_mask_grow_prune'+str(imager.ncycle)
+            pruneRegions(psfImage,inMask,minBeamFrac,outMask)
 
-        # Smooth the subtracted mask
+        # Smooth the resulting mask
         inMask = outMask
         outMask = 'tmp_mask_grow_smooth'+str(imager.ncycle)
         smoothMask(inMask,smoothKernel,outMask)
