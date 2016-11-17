@@ -82,7 +82,8 @@ def runTclean(paramList,
         ia.open(thresholdMask)
         maskStats = ia.statistics(axes=[0,1])
         ia.done()
-        doGrow = maskStats['max'] < 1
+        #doGrow = maskStats['max'] < 1
+        doGrow = numpy.ones(len(maskStats['max'])).astype('bool')
 
         outConstraintMask = 'tmp_mask_constraint'+str(imager.ncycle)
         calcThresholdMask(residImage,lowMaskThreshold,outConstraintMask)
