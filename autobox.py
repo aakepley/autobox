@@ -486,6 +486,9 @@ def pruneRegions(psfImage,maskImage,minBeamFrac,outMask):
     # get beam area in pixels using analysis utils
     beamArea = au.pixelsPerBeam(psfImage) 
     npix = beamArea * minBeamFrac
+
+    casalog.post("beam area " + str(beamArea) + " pixels",origin='autobox')
+    casalog.post("prune area less then " + str(npix) + " pixels",origin='autobox')
     
     # open image and get mask
     ia.open(maskImage)
