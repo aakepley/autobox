@@ -16,9 +16,18 @@ def runTclean(paramList,
     import numpy
     import copy
     import time;
-    
-    from refimagerhelper import PySynthesisImager
-    from refimagerhelper import ImagerParameters, PerformanceMeasure
+
+#Original    
+#    from refimagerhelper import PySynthesisImager
+#    from refimagerhelper import ImagerParameters, PerformanceMeasure
+#
+
+#From Urvashi
+    from imagerhelpers.imager_base import PySynthesisImager
+    from imagerhelpers.imager_parallel_continuum import PyParallelContSynthesisImager
+    from imagerhelpers.imager_parallel_cube import PyParallelCubeSynthesisImager
+    from imagerhelpers.input_parameters import ImagerParameters
+#
 
     import analyzemsimage
     import pdb
