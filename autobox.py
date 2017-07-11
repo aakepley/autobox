@@ -2,6 +2,7 @@ from taskinit import * # This gets me CASA toolkit tasks.
 
 if casalog.version() > '5.0.0': # fix needed for casa 5.0.0
    ia = iatool() 
+   rg = rgtool()
 
 def runTclean(paramList, 
               sidelobeThreshold,lowNoiseThreshold, noiseThreshold,  
