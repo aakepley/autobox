@@ -7,7 +7,7 @@ if casalog.version() > '5.0.0': # fix needed for casa 5.0.0
 def runTclean(paramList, 
               sidelobeThreshold,lowNoiseThreshold, noiseThreshold,  
               smoothFactor, cutThreshold,
-              minBeamFrac=-1):
+              minBeamFrac=-1,dilationIters=100,annulus=False):
     '''
     run clean
     '''
@@ -63,7 +63,7 @@ def runTclean(paramList,
     imager.runMajorCycle()
     
     # make initial threshold mask
-    (maskThreshold, lowMaskThreshold) = calcThresholds(residImage,pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold)
+    (maskThreshold, lowMaskThreshold) = calcThresholds(residImage,pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold,annulus=annulus)
     thresholdMask = createThresholdMask(residImage,psfImage,maskThreshold,minBeamFrac,smoothKernel,cutThreshold,ncycle=imager.ncycle)
     outMask = thresholdMask
 
@@ -87,7 +87,7 @@ def runTclean(paramList,
         imager.runMajorCycle()
     
         # make threshold mask
-        (maskThreshold, lowMaskThreshold) = calcThresholds(residImage,pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold)
+        (maskThreshold, lowMaskThreshold) = calcThresholds(residImage,pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold,annulus=annulus)
 
         thresholdMask = createThresholdMask(residImage,psfImage,maskThreshold,minBeamFrac,smoothKernel,cutThreshold,ncycle=imager.ncycle)
 
@@ -101,10 +101,11 @@ def runTclean(paramList,
         outConstraintMask = 'tmp_mask_constraint'+str(imager.ncycle)
         calcThresholdMask(residImage,lowMaskThreshold,outConstraintMask)
       
+        casalog.post('Growing mask',origin='autobox')
         # run a binary dilation on the mask 
         prevMask = maskImage + str(imager.ncycle - 1)
         outMask = 'tmp_mask_grow'+str(imager.ncycle)
-        growMask(prevMask,outConstraintMask,outMask,doGrow,iterations=100)
+        growMask(prevMask,outConstraintMask,outMask,doGrow,iterations=dilationIters)
                 
         # multiply the binary dilated mask by the constraint
         # mask. Returns lowNoiseThreshold mask that is connected to
@@ -112,6 +113,8 @@ def runTclean(paramList,
         inMask = outMask
         outMask = 'tmp_mask_grow_multiply'+str(imager.ncycle)
         multiplyMasks(outConstraintMask,inMask,outMask)
+
+        casalog.post('Done growing mask',origin='autobox')
 
         # prune regions smaller than beam
         if minBeamFrac > 0:
@@ -187,7 +190,7 @@ def getImageNames(paramList):
 
     return (image,psfImage,residImage,maskImage,pbImage)
 
-def fitPSF(psfname,boxpixels=20):
+def fitPSF(psfname,boxpixels=9):
     '''
     fit psf and then subtract psf. return the minimum psf sidelobe
     value. Code is based on VLASS example code.
@@ -207,6 +210,7 @@ def fitPSF(psfname,boxpixels=20):
         psf0.done()
         psfname=psfname+"0"
     ia.done()
+
 
     # create residual image
     psfresid = psfname + '.resid'
@@ -245,7 +249,7 @@ def calcSmooth(psfImage, smoothFactor):
 
     return beam
      
-def calcThresholds(residImage, pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold):
+def calcThresholds(residImage, pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold,annulus=False):
     '''
     calculate the various thresholds for each mask
     '''
@@ -253,7 +257,7 @@ def calcThresholds(residImage, pbImage, sidelobeThreshold, sidelobeLevel,noiseTh
     import numpy
 
     # determine peak and RMS of residual image
-    (residPeak, residRMS) = findResidualStats(residImage,pbImage,annulus=False)
+    (residPeak, residRMS) = findResidualStats(residImage,pbImage,annulus=annulus)
     
     casalog.post("Peak Residual: " + str(residPeak),origin='autobox')
     casalog.post("Residual RMS: " + str(residRMS),origin='autobox')
@@ -274,7 +278,7 @@ def calcThresholds(residImage, pbImage, sidelobeThreshold, sidelobeLevel,noiseTh
     return (maskThreshold, lowMaskThreshold)
 
 
-def findResidualStats(residImage, pbImage, annulus=True):
+def findResidualStats(residImage, pbImage, annulus=False):
     '''
     calculate the peak of the residual
     '''
@@ -291,9 +295,11 @@ def findResidualStats(residImage, pbImage, annulus=True):
     # calculate RMS in annulus
     if annulus:
 
-        imageStats = analyzemsimage.imstatAnnulus(residImage,pbimage=pbImage,innerLevel=0.3,outerLevel=0.2,verbose=True,perChannel=True)
+       casalog.post('Calculating RMS in annulus',origin='autobox')
 
-        residRMS = imageStats['medabsdevmed'] * MADtoRMS
+       imageStats = analyzemsimage.imstatAnnulus(residImage,pbimage=pbImage,innerLevel=0.3,outerLevel=0.2,verbose=True,perChannel=True)
+
+       residRMS = imageStats['medabsdevmed'] * MADtoRMS
 
     # just calculate the RMS in the whole image
     else:
