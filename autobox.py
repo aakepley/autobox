@@ -7,7 +7,7 @@ if casalog.version() > '5.0.0': # fix needed for casa 5.0.0
 def runTclean(paramList, 
               sidelobeThreshold,lowNoiseThreshold, noiseThreshold,  
               smoothFactor, cutThreshold,
-              minBeamFrac=-1,dilationIters=100,annulus=False):
+              minBeamFrac=-1,dilationIters=100,stats='mad',maxiter=5,zscore=-1,f=0.5):
     '''
     run clean
     '''
@@ -63,7 +63,7 @@ def runTclean(paramList,
     imager.runMajorCycle()
     
     # make initial threshold mask
-    (maskThreshold, lowMaskThreshold) = calcThresholds(residImage,pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold,annulus=annulus)
+    (maskThreshold, lowMaskThreshold) = calcThresholds(residImage,pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold,stats=stats,maxiter=maxiter,zscore=zscore,f=f)
     thresholdMask = createThresholdMask(residImage,psfImage,maskThreshold,minBeamFrac,smoothKernel,cutThreshold,ncycle=imager.ncycle)
     outMask = thresholdMask
 
@@ -87,7 +87,7 @@ def runTclean(paramList,
         imager.runMajorCycle()
     
         # make threshold mask
-        (maskThreshold, lowMaskThreshold) = calcThresholds(residImage,pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold,annulus=annulus)
+        (maskThreshold, lowMaskThreshold) = calcThresholds(residImage,pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold,stats=stats,maxiter=maxiter,zscore=zscore,f=f)
 
         thresholdMask = createThresholdMask(residImage,psfImage,maskThreshold,minBeamFrac,smoothKernel,cutThreshold,ncycle=imager.ncycle)
 
@@ -249,7 +249,7 @@ def calcSmooth(psfImage, smoothFactor):
 
     return beam
      
-def calcThresholds(residImage, pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold,annulus=False):
+def calcThresholds(residImage, pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold,stats='mad',maxiter=5,zscore=-1,f=0.5):
     '''
     calculate the various thresholds for each mask
     '''
@@ -257,7 +257,7 @@ def calcThresholds(residImage, pbImage, sidelobeThreshold, sidelobeLevel,noiseTh
     import numpy
 
     # determine peak and RMS of residual image
-    (residPeak, residRMS) = findResidualStats(residImage,pbImage,annulus=annulus)
+    (residPeak, residRMS) = findResidualStats(residImage,pbImage,stats=stats,maxiter=maxiter,zscore=zscore,f=f)
     
     casalog.post("Peak Residual: " + str(residPeak),origin='autobox')
     casalog.post("Residual RMS: " + str(residRMS),origin='autobox')
@@ -278,7 +278,7 @@ def calcThresholds(residImage, pbImage, sidelobeThreshold, sidelobeLevel,noiseTh
     return (maskThreshold, lowMaskThreshold)
 
 
-def findResidualStats(residImage, pbImage, annulus=False):
+def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5):
     '''
     calculate the peak of the residual
     '''
@@ -287,24 +287,52 @@ def findResidualStats(residImage, pbImage, annulus=False):
 
     MADtoRMS =  1.4826 # conversion factor between MAD and RMS. Ref: wikipedia
 
-    ia.open(residImage)
-    residStats = ia.statistics(robust=True,axes=[0,1])
-    ia.done()
-    residPeak = residStats['max'] ## do I want to make this the absolute value of the max/min??
-    
-    # calculate RMS in annulus
-    if annulus:
+    # calculate RMS depending on desired statistics
+    if stats=='annulus':
 
-       casalog.post('Calculating RMS in annulus',origin='autobox')
+       casalog.post('Calculating RMS via the MAD in an annulus',origin='autobox')
 
        imageStats = analyzemsimage.imstatAnnulus(residImage,pbimage=pbImage,innerLevel=0.3,outerLevel=0.2,verbose=True,perChannel=True)
 
        residRMS = imageStats['medabsdevmed'] * MADtoRMS
 
+    elif stats=='chauv':
+
+       casalog.post('Calculating RMS using Chauvenet criteria',origin='autobox')
+
+       ia.open(residImage)
+       residStats = ia.statistics(robust=True,axes=[0,1],algorithm='chauvenet',maxiter=maxiter,zscore=zscore)
+       ia.done()
+       residPeak = residStats['max'] 
+       residRMS = residStats['rms']
+       
+    elif stats=='hinge':
+
+       casalog.post('Calculating RMS using hinge-fences',origin='autobox')
+       
+       ia.open(residImage)
+       residStats = ia.statistics(robust=True,axes=[0,1],algorithm='hinge-fence',fence=f)
+       ia.done()
+       residPeak = residStats['max'] 
+       residRMS = residStats['rms']
+       
+   elif stats=='itermad':
+      casalog.post('Calculating MAD iteratively',origin='autobox')
+
+      
+      
+
     # just calculate the RMS in the whole image
     else:
 
-        residRMS = residStats['medabsdevmed'] * MADtoRMS
+       casalog.post('Calculating RMS using MAD',origin='autobox')
+
+       ia.open(residImage)
+       residStats = ia.statistics(robust=True,axes=[0,1])
+       ia.done()
+       residPeak = residStats['max'] ## do I want to make this the absolute value of the max/min??
+       residRMS = residStats['medabsdevmed'] * MADtoRMS
+
 
     casalog.post('Noise in residual image is ' + str(residRMS), origin='autobox')
 
