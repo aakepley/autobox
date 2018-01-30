@@ -7,7 +7,7 @@ if casalog.version() > '5.0.0': # fix needed for casa 5.0.0
 def runTclean(paramList, 
               sidelobeThreshold,lowNoiseThreshold, noiseThreshold,  
               smoothFactor, cutThreshold,
-              minBeamFrac=-1,dilationIters=100,stats='mad',maxiter=5,zscore=-1,f=0.5):
+              minBeamFrac=-1,dilationIters=100,stats='mad',maxiter=5,zscore=-1,f=0.5,pixLim=3.0):
     '''
     run clean
     '''
@@ -63,7 +63,8 @@ def runTclean(paramList,
     imager.runMajorCycle()
     
     # make initial threshold mask
-    (maskThreshold, lowMaskThreshold) = calcThresholds(residImage,pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold,stats=stats,maxiter=maxiter,zscore=zscore,f=f)
+    (maskThreshold, lowMaskThreshold) = calcThresholds(residImage,pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold,stats=stats,maxiter=maxiter,zscore=zscore,f=f,pixLim=pixLim)
+
     thresholdMask = createThresholdMask(residImage,psfImage,maskThreshold,minBeamFrac,smoothKernel,cutThreshold,ncycle=imager.ncycle)
     outMask = thresholdMask
 
@@ -87,7 +88,7 @@ def runTclean(paramList,
         imager.runMajorCycle()
     
         # make threshold mask
-        (maskThreshold, lowMaskThreshold) = calcThresholds(residImage,pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold,stats=stats,maxiter=maxiter,zscore=zscore,f=f)
+        (maskThreshold, lowMaskThreshold) = calcThresholds(residImage,pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold,stats=stats,maxiter=maxiter,zscore=zscore,f=f,pixLim=pixLim)
 
         thresholdMask = createThresholdMask(residImage,psfImage,maskThreshold,minBeamFrac,smoothKernel,cutThreshold,ncycle=imager.ncycle)
 
@@ -249,7 +250,7 @@ def calcSmooth(psfImage, smoothFactor):
 
     return beam
      
-def calcThresholds(residImage, pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold,stats='mad',maxiter=5,zscore=-1,f=0.5):
+def calcThresholds(residImage, pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold,stats='mad',maxiter=5,zscore=-1,f=0.5,pixLim=3.0):
     '''
     calculate the various thresholds for each mask
     '''
@@ -257,7 +258,7 @@ def calcThresholds(residImage, pbImage, sidelobeThreshold, sidelobeLevel,noiseTh
     import numpy
 
     # determine peak and RMS of residual image
-    (residPeak, residRMS) = findResidualStats(residImage,pbImage,stats=stats,maxiter=maxiter,zscore=zscore,f=f)
+    (residPeak, residRMS) = findResidualStats(residImage,pbImage,stats=stats,maxiter=maxiter,zscore=zscore,f=f,pixLim=pixLim)
     
     casalog.post("Peak Residual: " + str(residPeak),origin='autobox')
     casalog.post("Residual RMS: " + str(residRMS),origin='autobox')
@@ -278,12 +279,13 @@ def calcThresholds(residImage, pbImage, sidelobeThreshold, sidelobeLevel,noiseTh
     return (maskThreshold, lowMaskThreshold)
 
 
-def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5):
+def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5,pixLim=3.0):
     '''
     calculate the peak of the residual
     '''
 
     import analyzemsimage
+    import numpy as np
 
     MADtoRMS =  1.4826 # conversion factor between MAD and RMS. Ref: wikipedia
 
@@ -307,7 +309,6 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
        residRMS = residStats['rms']
        
     elif stats=='hinge':
-
        casalog.post('Calculating RMS using hinge-fences',origin='autobox')
        
        ia.open(residImage)
@@ -316,12 +317,45 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
        residPeak = residStats['max'] 
        residRMS = residStats['rms']
        
-   elif stats=='itermad':
-      casalog.post('Calculating MAD iteratively',origin='autobox')
+    elif stats=='itermad':
+       casalog.post('Calculating MAD iteratively with pixLim='+str(pixLim),origin='autobox')
+       
+       # open image and get stats, etc
+       ia.open(residImage)
+       
+       stat0 = ia.statistics(robust=True,axes=[0,1])
+       pix0 = ia.getchunk()
+       cs = ia.coordsys()
+       shape = ia.shape()
+       spax = cs.findaxisbyname('Spectral')
+       nchan = shape[spax]
+       pix1 = np.copy(pix0)
+       outPix = (np.abs(pix0 - stat0['median']) / stat0['medabsdevmed']) 
+       
+       flagPix = np.squeeze(np.sum(outPix > pixLim,axis=(0,1)))
+       fracFlag = flagPix /float( np.shape(outPix)[0] * np.shape(outPix)[1])
+       
+       casalog.post('Fraction of flagged pixels: '+str(fracFlag),origin='autobox')
+       ia.calcmask('T',name='original')
+       
+       stat0Image = ia.newimagefromarray(outfile='stat0.image',pixels=outPix,csys=cs.torecord(),overwrite=True)
+       ia.calcmask("'"+stat0Image.name()+"'"+'<'+str(pixLim),name='madmask0') #This makes it the default mask
+       stat0Image.close()
+       
+       stat1 = ia.statistics(robust=True,axes=[0,1])
 
-      
-      
-
+       ia.maskhandler(op='set',name='original') # set default mask back to all true
+       
+       madDiff = 100.0*(stat1['medabsdevmed'] - stat0['medabsdevmed'])/(stat0['medabsdevmed'])
+       
+       casalog.post('Difference in MAD calculation: '+str(madDiff),origin='autobox')
+       
+       ia.close()
+       ia.done()
+       
+       residPeak = stat0['max']
+       residRMS = stat1['medabsdevmed'] * MADtoRMS
+       
     # just calculate the RMS in the whole image
     else:
 
