@@ -87,8 +87,11 @@ def runTclean(paramList,
         imager.runMinorCycle() 
         imager.runMajorCycle()
     
+        # name of mask from previous cycle
+        prevMask = maskImage + str(imager.ncycle - 1)
+
         # make threshold mask
-        (maskThreshold, lowMaskThreshold) = calcThresholds(residImage,pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold,stats=stats,maxiter=maxiter,zscore=zscore,f=f,pixLim=pixLim)
+        (maskThreshold, lowMaskThreshold) = calcThresholds(residImage,pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold,stats=stats,maxiter=maxiter,zscore=zscore,f=f,pixLim=pixLim,maskImage=prevMask)
 
         thresholdMask = createThresholdMask(residImage,psfImage,maskThreshold,minBeamFrac,smoothKernel,cutThreshold,ncycle=imager.ncycle)
 
@@ -104,7 +107,6 @@ def runTclean(paramList,
       
         casalog.post('Growing mask',origin='autobox')
         # run a binary dilation on the mask 
-        prevMask = maskImage + str(imager.ncycle - 1)
         outMask = 'tmp_mask_grow'+str(imager.ncycle)
         growMask(prevMask,outConstraintMask,outMask,doGrow,iterations=dilationIters)
                 
@@ -250,7 +252,7 @@ def calcSmooth(psfImage, smoothFactor):
 
     return beam
      
-def calcThresholds(residImage, pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold,stats='mad',maxiter=5,zscore=-1,f=0.5,pixLim=3.0):
+def calcThresholds(residImage, pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold,stats='mad',maxiter=5,zscore=-1,f=0.5,pixLim=3.0,maskImage=''):
     '''
     calculate the various thresholds for each mask
     '''
@@ -258,7 +260,7 @@ def calcThresholds(residImage, pbImage, sidelobeThreshold, sidelobeLevel,noiseTh
     import numpy
 
     # determine peak and RMS of residual image
-    (residPeak, residRMS) = findResidualStats(residImage,pbImage,stats=stats,maxiter=maxiter,zscore=zscore,f=f,pixLim=pixLim)
+    (residPeak, residRMS) = findResidualStats(residImage,pbImage,stats=stats,maxiter=maxiter,zscore=zscore,f=f,pixLim=pixLim,maskImage=maskImage)
     
     casalog.post("Peak Residual: " + str(residPeak),origin='autobox')
     casalog.post("Residual RMS: " + str(residRMS),origin='autobox')
@@ -279,7 +281,7 @@ def calcThresholds(residImage, pbImage, sidelobeThreshold, sidelobeLevel,noiseTh
     return (maskThreshold, lowMaskThreshold)
 
 
-def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5,pixLim=3.0):
+def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5,pixLim=3.0,maskImage=''):
     '''
     calculate the peak of the residual
     '''
@@ -306,8 +308,9 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
        residStats = ia.statistics(robust=True,axes=[0,1],algorithm='chauvenet',maxiter=maxiter,zscore=zscore)
        ia.done()
        residPeak = residStats['max'] 
-       residRMS = residStats['rms']
-       
+       #residRMS = residStats['rms']  ## MAD might work better here.
+       residRMS = residStats['medabsdevmed'] * MADtoRMS
+
     elif stats=='hinge':
        casalog.post('Calculating RMS using hinge-fences',origin='autobox')
        
@@ -355,7 +358,71 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
        
        residPeak = stat0['max']
        residRMS = stat1['medabsdevmed'] * MADtoRMS
+
+
+    elif stats=='maskedMAD':
+
+       ia.open(residImage)
+       allStats = ia.statistics(robust=True,axes=[0,1])
+       residPeak = allStats['max'] # peak should always be from the whole image.
+
+       # to get the best noise estimate possible, we want to remove regions that have already been identified as signal.
+       if maskImage:
+          # Let's calculate the MAD from classic stats with the mask
+          ia.calcmask(maskImage+"<0.5"+"&& mask("+residImage+")",name='madpbmask0') #This makes it the default mask
+          mask0Stats = ia.statistics(robust=True,axes=[0,1])
+          ia.maskhandler(op='set',name='mask0')
+          residRMS = mask0Stats['medabsdevmed'] * MADtoRMS
+          casalog.post("RMS from whole image: "+str(allStats['medabsdevmed'] * MADtoRMS),origin='autobox')
+          casalog.post("RMS from masked image: "+str(mask0Stats['medabsdevmed'] * MADtoRMS),origin='autobox')
+       else:
+          casalog.post("No mask image specified. Calculating normal stats",origin='autobox')
+          residRMS = allStats['medabsdevmed'] * MADtoRMS
+          
+       ia.close()
+       ia.done()
+
+ 
+    elif stats=='biweight':
        
+       casalog.post('Calculating RMS using biweight',origin='autobox')
+       
+       ia.open(residImage)
+       residStats = ia.statistics(robust=True,axes=[0,1])
+       pix0 = ia.getchunk()
+       cs = ia.coordsys()
+       shape = ia.shape()
+       spax = cs.findaxisbyname('Spectral')
+       nchan = shape[spax]
+       ia.done()
+
+       residPeak = residStats['max'] 
+
+       residRMS = np.zeros(nchan)
+       for i in np.arange(nchan):
+          (mean, sigma) = biweight_mean(pix0[:,:,:,i].flatten())
+          residRMS[i] = sigma
+
+    elif stats=='biweight_noiter':
+
+       casalog.post('Calculating RMS using biweight without iterations',origin='autobox')
+       
+       ia.open(residImage)
+       residStats = ia.statistics(robust=True,axes=[0,1])
+       pix0 = ia.getchunk()
+       cs = ia.coordsys()
+       shape = ia.shape()
+       spax = cs.findaxisbyname('Spectral')
+       nchan = shape[spax]
+       ia.done()
+
+       residPeak = residStats['max'] 
+
+       residRMS = np.zeros(nchan)
+       for i in np.arange(nchan):
+          (mean, sigma) = biweight_noiter(pix0[:,:,:,i].flatten())
+          residRMS[i] = sigma
+
     # just calculate the RMS in the whole image
     else:
 
@@ -664,3 +731,119 @@ def copyMask(inMask,outMask):
     ia.close()
     ia.done()
    
+def robust_sigma(y,zero=False):
+
+    '''
+    Following IDLASTRO robust_sigma routine
+    '''
+
+    import numpy as np
+    import scipy
+
+    if zero:
+        y0 = 0.0
+    else:
+        y0 = np.median(y)
+
+    MADtoRMS = 1.4826 
+    madn = np.median(abs(y-y0)) * MADtoRMS
+
+    U = (y-y0)/(6.0*madn)  ## could also make the constant 9 here. The constant controls the boundary beyond which data is downweighted
+    UU = U*U
+
+    idx = np.abs(U) < 1.0
+    
+    N = np.sum(np.isfinite(y))
+    num = np.sum( (y[idx]-y0)**2 * (1.0-UU[idx])**4)
+    denom = np.sum( (1.0-UU[idx]) * (1.0-5.0*UU[idx]))
+    sigmasq_est = N * num / (denom * (denom-1.0))
+    sigma_est = np.sqrt(sigmasq_est)
+
+    return sigma_est
+
+    
+
+def biweight_mean(y):
+
+    '''
+    based on IDLASTRO biweight_mean
+    '''
+    
+    import numpy as np
+
+    # control parameters
+    maxit= 20
+    eps = 1.0e-24
+
+    n = np.size(y)
+    
+    # I don't know where this comes from
+    close_enough = 0.03 * np.sqrt(0.5/(n-1))
+
+    # control parameters
+    diff = 1.0e30
+    itnum=0
+
+    # initialize center
+    y0 = np.median(y)
+
+    dev = y - y0
+    sigma = robust_sigma(dev)
+    
+    if sigma < eps:
+       diff = 0.0
+
+    while ((diff > close_enough) and (itnum < maxit)):
+        itnum = itnum + 1
+        uu = ((y-y0)/(6.0*sigma))**2
+
+        uunew = np.where(uu < 1.0,uu,np.ones(n))
+        weights = (1.0-uu)**2
+        weights = weights / np.sum(weights)
+        y0 = np.sum(weights *y)
+        dev = y - y0
+        
+        prev_sigma = sigma
+        sigma = robust_sigma(dev,zero=True)
+        
+        if sigma > eps:
+            diff = abs(prev_sigma-sigma)/prev_sigma
+        else:
+            diff = 0.0
+            
+    return (y0, sigma)
+        
+        
+def biweight_noiter(y):
+
+    '''
+    calculate the bi-weight without iteration
+    '''
+    
+    
+    import numpy as np
+    import scipy
+    
+    y0 = np.median(y)
+
+    MADtoRMS = 1.4826 
+    madn = np.median(abs(y-y0)) * MADtoRMS
+
+    U = (y-y0)/(6.0*madn)  ## could also make the constant 9 here. The constant controls the boundary beyond which data is downweighted
+    UU = U*U
+
+    idx = np.abs(U) < 1.0
+    
+    N = np.sum(np.isfinite(y))
+    num = np.sum( (y[idx]-y0)**2 * (1.0-UU[idx])**4)
+    denom = np.sum( (1.0-UU[idx]) * (1.0-5.0*UU[idx]))
+
+
+    mean_est = np.sum(y[idx] * (1-UU[idx])**2)/np.sum((1-UU[idx])**2)
+
+    sigmasq_est = N * num / (denom * (denom-1.0))
+    sigma_est = np.sqrt(sigmasq_est)
+
+    return (mean_est, sigma_est)
+
+    
