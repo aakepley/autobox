@@ -299,9 +299,10 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
 
        imageStats = analyzemsimage.imstatAnnulus(residImage,pbimage=pbImage,innerLevel=0.3,outerLevel=0.2,verbose=True,perChannel=True)
 
+       residPeak = imageStats['max']
        residRMS = imageStats['medabsdevmed'] * MADtoRMS
        residMean = imageStats['median']
-
+       
     elif stats=='chauv':
 
        casalog.post('Calculating RMS using Chauvenet criteria',origin='autobox')
@@ -309,8 +310,8 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
        ia.open(residImage)
        residStats = ia.statistics(robust=True,axes=[0,1],algorithm='chauvenet',maxiter=maxiter,zscore=zscore)
        ia.done()
+
        residPeak = residStats['max'] 
-       #residRMS = residStats['rms']  ## MAD might work better here.
        residRMS = residStats['medabsdevmed'] * MADtoRMS
        residMean = residStats['median']
 
@@ -324,54 +325,54 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
        residRMS = residStats['rms']
        residMean = residStats['median']
        
-    elif stats=='itermad':
-       ## Don't think this is working right, but not going to fix for
-       ## now because this isn't going into tclean.
-       casalog.post('Calculating MAD iteratively with pixLim='+str(pixLim),origin='autobox')
+    # elif stats=='itermad':
+    #    ## Don't think this is working right, but not going to fix for
+    #    ## now because this isn't going into tclean.
+    #    casalog.post('Calculating MAD iteratively with pixLim='+str(pixLim),origin='autobox')
        
-       # open image and get stats, etc
-       ia.open(residImage)
+    #    # open image and get stats, etc
+    #    ia.open(residImage)
        
-       stat0 = ia.statistics(robust=True,axes=[0,1])
-       pix0 = ia.getchunk()
-       cs = ia.coordsys()
-       shape = ia.shape()
-       spax = cs.findaxisbyname('Spectral')
-       nchan = shape[spax]
-       pix1 = np.copy(pix0)
-       outPix = (np.abs(pix0 - stat0['median']) / stat0['medabsdevmed']) 
+    #    stat0 = ia.statistics(robust=True,axes=[0,1])
+    #    pix0 = ia.getchunk()
+    #    cs = ia.coordsys()
+    #    shape = ia.shape()
+    #    spax = cs.findaxisbyname('Spectral')
+    #    nchan = shape[spax]
+    #    pix1 = np.copy(pix0)
+    #    outPix = (np.abs(pix0 - stat0['median']) / stat0['medabsdevmed']) 
        
-       flagPix = np.squeeze(np.sum(outPix > pixLim,axis=(0,1)))
-       fracFlag = flagPix /float( np.shape(outPix)[0] * np.shape(outPix)[1])
+    #    flagPix = np.squeeze(np.sum(outPix > pixLim,axis=(0,1)))
+    #    fracFlag = flagPix /float( np.shape(outPix)[0] * np.shape(outPix)[1])
        
-       casalog.post('Fraction of flagged pixels: '+str(fracFlag),origin='autobox')
-       #ia.calcmask('T',name='original') ### this could be a problem. Essnetially this nukes the primary beam.
+    #    casalog.post('Fraction of flagged pixels: '+str(fracFlag),origin='autobox')
+    #    #ia.calcmask('T',name='original') ### this could be a problem. Essnetially this nukes the primary beam.
 
-       stat0Image = ia.newimagefromarray(outfile='stat0.image',pixels=outPix,csys=cs.torecord(),overwrite=True)
-       ia.calcmask("'"+stat0Image.name()+"'"+'<'+str(pixLim)+"&& mask("+residImage+")",name='madmask0') #This makes it the default mask
-       stat0Image.close()
+    #    stat0Image = ia.newimagefromarray(outfile='stat0.image',pixels=outPix,csys=cs.torecord(),overwrite=True)
+    #    ia.calcmask("'"+stat0Image.name()+"'"+'<'+str(pixLim)+"&& mask("+residImage+")",name='madmask0') #This makes it the default mask
+    #    stat0Image.close()
        
-       stat1 = ia.statistics(robust=True,axes=[0,1])
+    #    stat1 = ia.statistics(robust=True,axes=[0,1])
 
-       #ia.maskhandler(op='set',name='original') # set default mask back to all true
-       ia.maskhandler(op='set',name='mask0')
+    #    #ia.maskhandler(op='set',name='original') # set default mask back to all true
+    #    ia.maskhandler(op='set',name='mask0')
 
-       madDiff = 100.0*(stat1['medabsdevmed'] - stat0['medabsdevmed'])/(stat0['medabsdevmed'])
+    #    madDiff = 100.0*(stat1['medabsdevmed'] - stat0['medabsdevmed'])/(stat0['medabsdevmed'])
        
-       casalog.post('Difference in MAD calculation: '+str(madDiff),origin='autobox')
+    #    casalog.post('Difference in MAD calculation: '+str(madDiff),origin='autobox')
        
-       ia.close()
-       ia.done()
+    #    ia.close()
+    #    ia.done()
        
-       residPeak = stat0['max']
-       residRMS = stat1['medabsdevmed'] * MADtoRMS
+    #    residPeak = stat0['max']
+    #    residRMS = stat1['medabsdevmed'] * MADtoRMS
 
 
     elif stats=='maskedMAD':
 
        ia.open(residImage)
        allStats = ia.statistics(robust=True,axes=[0,1])
-       residPeak = allStats['max'] # peak should always be from the whole image. I think.
+       residPeak = allStats['max'] # peak should always be from the whole image, I think.
 
        # to get the best noise estimate possible, we want to remove regions that have already been identified as signal.
        if maskImage:
@@ -388,9 +389,14 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
           casalog.post("Median from masked image:"+str(mask0Stats['median']), origin='autobox')
 
        else:
-          casalog.post("No mask image specified. Calculating normal stats",origin='autobox')
-          residRMS = allStats['medabsdevmed'] * MADtoRMS
-          residMean = allStats['median']
+
+          ## do I want to have some more options here?? perhaps bweight, etc?
+          casalog.post("No mask image specified. Calculating normal stats using chauvenet",origin='autobox')
+  
+          residStats = ia.statistics(robust=True,axes=[0,1],algorithm='chauvenet',maxiter=maxiter,zscore=zscore)
+          residRMS = residStats['medabsdevmed'] * MADtoRMS
+          residMean = residStats['median']
+             
 
        ia.close()
        ia.done()
@@ -400,121 +406,99 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
        
        casalog.post('Calculating RMS using biweight',origin='autobox')
        
+       ### This needs to be run in a version of CASA 5.3 that has biweight in ia.statistics
        ia.open(residImage)
-       residStats = ia.statistics(robust=True,axes=[0,1])
-       pix0 = ia.getchunk()
-       pbmask = ia.getchunk(getmask=True)
-       cs = ia.coordsys()
-       shape = ia.shape()
-       spax = cs.findaxisbyname('Spectral')
-       nchan = shape[spax]
-       ia.done()
+       residStats = ia.statistics(axes=[0,1],algorithm='biweight',niter=10)
+       ia.done(residImage)
 
-       residPeak = residStats['max'] 
-
-       residRMS = np.zeros(nchan)
-       residMean = np.zeros(nchan)
-       for i in np.arange(nchan):
-          mymask = ~pbmask[:,:,0,i]
-          pix0_masked = np.ma.masked_array(pix0[:,:,0,i],mymask)
-          pix0_onlytrue = np.ma.compressed(pix0_masked)
-          (mean, sigma) = biweight_noiter(pix0_onlytrue)
-          residMean[i] = mean
-          residRMS[i] = sigma
+       residPeak = residStats['max']
+       residRMS = residStats['sigma']
+       residMean = residStats['mean']
 
     elif stats=='biweight_masked':
        
+       # updated to use the implemented biweight in ia.statistics
        casalog.post('Calculating RMS using masked biweight',origin='autobox')
        
        ia.open(residImage)
-       residStats = ia.statistics(robust=True,axes=[0,1])
-       pix0 = ia.getchunk()
-       pbmask = ia.getchunk(getmask=True)
-       cs = ia.coordsys()
-       shape = ia.shape()
-       spax = cs.findaxisbyname('Spectral')
-       nchan = shape[spax]
-       ia.done()
+       allStats = ia.statistics(robust=True,axes=[0,1])
+       residPeak = allStats['max'] # peak should always be from the whole image, I think.
 
-       residPeak = residStats['max'] 
-
+       # to get the best noise estimate possible, we want to remove regions that have already been identified as signal.
        if maskImage:
-          ia.open(maskImage)
-          mask0 = ia.getchunk()
-          ia.close()
-          ia.done()
-          mymask = (~pbmask) | (mask0 > 0.5)
-       else:
-          mymask = ~pbmask
+          # Let's calculate the biweight from classic stats with the mask
+          ia.calcmask(maskImage+"<0.5"+"&& mask("+residImage+")",name='madpbmask0') #This makes it the default mask
+          mask0Stats = ia.statistics(robust=True,axes=[0,1],algorithm='biweight',niter=10)
+          ia.maskhandler(op='set',name='mask0')
 
-       residRMS = np.zeros(nchan)
-       residMean = np.zeros(nchan)
-       for i in np.arange(nchan):
-          pix0_masked = np.ma.masked_array(pix0[:,:,0,i],mymask[:,:,0,i])
-          pix0_onlytrue = np.ma.compressed(pix0_masked)
-          (mean, sigma) = biweight_noiter(pix0_onlytrue)
-          residMean[i] = mean
-          residRMS[i] = sigma
+          residRMS = mask0Stats['medabsdevmed'] * MADtoRMS
+          residMean = mask0Stats['median']
+
+          casalog.post("RMS from whole image: "+str(allStats['medabsdevmed'] * MADtoRMS),origin='autobox')
+          casalog.post("RMS from masked image: "+str(mask0Stats['medabsdevmed'] * MADtoRMS),origin='autobox')
+          casalog.post("Median from whole image:"+str(allStats['median']), origin='autobox')
+          casalog.post("Median from masked image:"+str(mask0Stats['median']), origin='autobox')
+
+       else:
+
+          casalog.post("No mask image specified. Calculating normal stats using biweight",origin='autobox')
+  
+          residStats = ia.statistics(robust=True,axes=[0,1],algorithm='biweight',niter=10)
+          residRMS = residStats['medabsdevmed'] * MADtoRMS
+          residMean = residStats['median']
+             
+
+       ia.close()
+       ia.done()
+    
 
     elif stats=='biweight_noiter':
 
        casalog.post('Calculating RMS using biweight without iterations',origin='autobox')
        
+       ## This needs to be run in a version of CASA 5.3 that has biweight in ia.statistics
        ia.open(residImage)
-       residStats = ia.statistics(robust=True,axes=[0,1])
-       pix0 = ia.getchunk()
-       pbmask = ia.getchunk(getmask=True)
-       cs = ia.coordsys()
-       shape = ia.shape()
-       spax = cs.findaxisbyname('Spectral')
-       nchan = shape[spax]
-       ia.done()
+       residStats = ia.statistics(axes=[0,1],algorithm='biweight',niter=-1)
+       ia.done(residImage)
 
-       residPeak = residStats['max'] 
-
-       residRMS = np.zeros(nchan)
-       residMean = np.zeros(nchan)
-       for i in np.arange(nchan):
-          mymask = ~pbmask[:,:,0,i]
-          pix0_masked = np.ma.masked_array(pix0[:,:,0,i],mymask)
-          pix0_onlytrue = np.ma.compressed(pix0_masked)
-          (mean, sigma) = biweight_noiter(pix0_onlytrue)
-          residMean[i] = mean
-          residRMS[i] = sigma
+       residPeak = residStats['max']
+       residRMS = residStats['sigma']
+       residMean = residStats['mean']
 
     elif stats=='biweight_noiter_masked':
 
        casalog.post('Calculating RMS using biweight without iterations and with previous mask',origin='autobox')
        
        ia.open(residImage)
-       residStats = ia.statistics(robust=True,axes=[0,1])
-       pix0 = ia.getchunk()
-       pbmask = ia.getchunk(getmask=True)
-       cs = ia.coordsys()
-       shape = ia.shape()
-       spax = cs.findaxisbyname('Spectral')
-       nchan = shape[spax]
-       ia.done()
+       allStats = ia.statistics(robust=True,axes=[0,1])
+       residPeak = allStats['max'] # peak should always be from the whole image, I think.
 
-       residPeak = residStats['max'] 
-
+       # to get the best noise estimate possible, we want to remove regions that have already been identified as signal.
        if maskImage:
-          ia.open(maskImage)
-          mask0 = ia.getchunk()
-          ia.close()
-          ia.done()
-          mymask = (~pbmask) | (mask0 > 0.5)
-       else:
-          mymask = ~pbmask
+          # Let's calculate the biweight from classic stats with the mask
+          ia.calcmask(maskImage+"<0.5"+"&& mask("+residImage+")",name='madpbmask0') #This makes it the default mask
+          mask0Stats = ia.statistics(robust=True,axes=[0,1],algorithm='biweight',niter=-1)
+          ia.maskhandler(op='set',name='mask0')
+          residRMS = mask0Stats['medabsdevmed'] * MADtoRMS
+          residMean = mask0Stats['median']
 
-       residRMS = np.zeros(nchan)
-       residMean = np.zeros(nchan)
-       for i in np.arange(nchan):
-          pix0_masked = np.ma.masked_array(pix0[:,:,0,i],mymask[:,:,0,i])
-          pix0_onlytrue = np.ma.compressed(pix0_masked)
-          (mean, sigma) = biweight_noiter(pix0_onlytrue)
-          residMean[i] = mean
-          residRMS[i] = sigma
+          casalog.post("RMS from whole image: "+str(allStats['medabsdevmed'] * MADtoRMS),origin='autobox')
+          casalog.post("RMS from masked image: "+str(mask0Stats['medabsdevmed'] * MADtoRMS),origin='autobox')
+          casalog.post("Median from whole image:"+str(allStats['median']), origin='autobox')
+          casalog.post("Median from masked image:"+str(mask0Stats['median']), origin='autobox')
+
+       else:
+
+          casalog.post("No mask image specified. Calculating normal stats using biweight",origin='autobox')
+  
+          residStats = ia.statistics(robust=True,axes=[0,1],algorithm='biweight',niter=-1)
+          residRMS = residStats['medabsdevmed'] * MADtoRMS
+          residMean = residStats['median']
+             
+
+       ia.close()
+       ia.done()
+    
 
     # just calculate the RMS in the whole image
     else:
@@ -526,6 +510,7 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
        ia.done()
        residPeak = residStats['max'] ## do I want to make this the absolute value of the max/min??
        residRMS = residStats['medabsdevmed'] * MADtoRMS
+       residMean = residStats['median']
 
 
     casalog.post('Noise in residual image is ' + str(residRMS), origin='autobox')
