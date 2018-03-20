@@ -260,18 +260,19 @@ def calcThresholds(residImage, pbImage, sidelobeThreshold, sidelobeLevel,noiseTh
     import numpy
 
     # determine peak and RMS of residual image
-    (residPeak, residRMS) = findResidualStats(residImage,pbImage,stats=stats,maxiter=maxiter,zscore=zscore,f=f,pixLim=pixLim,maskImage=maskImage)
+    (residPeak, residRMS, residMean) = findResidualStats(residImage,pbImage,stats=stats,maxiter=maxiter,zscore=zscore,f=f,pixLim=pixLim,maskImage=maskImage)
     
     casalog.post("Peak Residual: " + str(residPeak),origin='autobox')
+    casalog.post("Residual Mean: " + str(residMean),origin='autobox')
     casalog.post("Residual RMS: " + str(residRMS),origin='autobox')
     
     # calculate thresholds
-    sidelobeThresholdValue = sidelobeThreshold*sidelobeLevel*residPeak
-    noiseThresholdValue = noiseThreshold*residRMS
+    sidelobeThresholdValue = sidelobeThreshold*sidelobeLevel*residPeak + residMean
+    noiseThresholdValue = noiseThreshold*residRMS + residMean
     
     maskThreshold = numpy.maximum(sidelobeThresholdValue,noiseThresholdValue)    
     
-    lowNoiseThresholdValue = lowNoiseThreshold*residRMS
+    lowNoiseThresholdValue = lowNoiseThreshold*residRMS + residMean
     lowMaskThreshold = numpy.maximum(sidelobeThresholdValue,lowNoiseThresholdValue)
     
     # Report what threshold we are using
@@ -299,6 +300,7 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
        imageStats = analyzemsimage.imstatAnnulus(residImage,pbimage=pbImage,innerLevel=0.3,outerLevel=0.2,verbose=True,perChannel=True)
 
        residRMS = imageStats['medabsdevmed'] * MADtoRMS
+       residMean = imageStats['median']
 
     elif stats=='chauv':
 
@@ -310,6 +312,7 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
        residPeak = residStats['max'] 
        #residRMS = residStats['rms']  ## MAD might work better here.
        residRMS = residStats['medabsdevmed'] * MADtoRMS
+       residMean = residStats['median']
 
     elif stats=='hinge':
        casalog.post('Calculating RMS using hinge-fences',origin='autobox')
@@ -319,8 +322,11 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
        ia.done()
        residPeak = residStats['max'] 
        residRMS = residStats['rms']
+       residMean = residStats['median']
        
     elif stats=='itermad':
+       ## Don't think this is working right, but not going to fix for
+       ## now because this isn't going into tclean.
        casalog.post('Calculating MAD iteratively with pixLim='+str(pixLim),origin='autobox')
        
        # open image and get stats, etc
@@ -339,16 +345,17 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
        fracFlag = flagPix /float( np.shape(outPix)[0] * np.shape(outPix)[1])
        
        casalog.post('Fraction of flagged pixels: '+str(fracFlag),origin='autobox')
-       ia.calcmask('T',name='original')
-       
+       #ia.calcmask('T',name='original') ### this could be a problem. Essnetially this nukes the primary beam.
+
        stat0Image = ia.newimagefromarray(outfile='stat0.image',pixels=outPix,csys=cs.torecord(),overwrite=True)
-       ia.calcmask("'"+stat0Image.name()+"'"+'<'+str(pixLim),name='madmask0') #This makes it the default mask
+       ia.calcmask("'"+stat0Image.name()+"'"+'<'+str(pixLim)+"&& mask("+residImage+")",name='madmask0') #This makes it the default mask
        stat0Image.close()
        
        stat1 = ia.statistics(robust=True,axes=[0,1])
 
-       ia.maskhandler(op='set',name='original') # set default mask back to all true
-       
+       #ia.maskhandler(op='set',name='original') # set default mask back to all true
+       ia.maskhandler(op='set',name='mask0')
+
        madDiff = 100.0*(stat1['medabsdevmed'] - stat0['medabsdevmed'])/(stat0['medabsdevmed'])
        
        casalog.post('Difference in MAD calculation: '+str(madDiff),origin='autobox')
@@ -364,7 +371,7 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
 
        ia.open(residImage)
        allStats = ia.statistics(robust=True,axes=[0,1])
-       residPeak = allStats['max'] # peak should always be from the whole image.
+       residPeak = allStats['max'] # peak should always be from the whole image. I think.
 
        # to get the best noise estimate possible, we want to remove regions that have already been identified as signal.
        if maskImage:
@@ -373,12 +380,18 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
           mask0Stats = ia.statistics(robust=True,axes=[0,1])
           ia.maskhandler(op='set',name='mask0')
           residRMS = mask0Stats['medabsdevmed'] * MADtoRMS
+          residMean = mask0Stats['median']
+
           casalog.post("RMS from whole image: "+str(allStats['medabsdevmed'] * MADtoRMS),origin='autobox')
           casalog.post("RMS from masked image: "+str(mask0Stats['medabsdevmed'] * MADtoRMS),origin='autobox')
+          casalog.post("Median from whole image:"+str(allStats['median']), origin='autobox')
+          casalog.post("Median from masked image:"+str(mask0Stats['median']), origin='autobox')
+
        else:
           casalog.post("No mask image specified. Calculating normal stats",origin='autobox')
           residRMS = allStats['medabsdevmed'] * MADtoRMS
-          
+          residMean = allStats['median']
+
        ia.close()
        ia.done()
 
@@ -390,6 +403,7 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
        ia.open(residImage)
        residStats = ia.statistics(robust=True,axes=[0,1])
        pix0 = ia.getchunk()
+       pbmask = ia.getchunk(getmask=True)
        cs = ia.coordsys()
        shape = ia.shape()
        spax = cs.findaxisbyname('Spectral')
@@ -399,8 +413,47 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
        residPeak = residStats['max'] 
 
        residRMS = np.zeros(nchan)
+       residMean = np.zeros(nchan)
        for i in np.arange(nchan):
-          (mean, sigma) = biweight_mean(pix0[:,:,:,i].flatten())
+          mymask = ~pbmask[:,:,0,i]
+          pix0_masked = np.ma.masked_array(pix0[:,:,0,i],mymask)
+          pix0_onlytrue = np.ma.compressed(pix0_masked)
+          (mean, sigma) = biweight_noiter(pix0_onlytrue)
+          residMean[i] = mean
+          residRMS[i] = sigma
+
+    elif stats=='biweight_masked':
+       
+       casalog.post('Calculating RMS using masked biweight',origin='autobox')
+       
+       ia.open(residImage)
+       residStats = ia.statistics(robust=True,axes=[0,1])
+       pix0 = ia.getchunk()
+       pbmask = ia.getchunk(getmask=True)
+       cs = ia.coordsys()
+       shape = ia.shape()
+       spax = cs.findaxisbyname('Spectral')
+       nchan = shape[spax]
+       ia.done()
+
+       residPeak = residStats['max'] 
+
+       if maskImage:
+          ia.open(maskImage)
+          mask0 = ia.getchunk()
+          ia.close()
+          ia.done()
+          mymask = (~pbmask) | (mask0 > 0.5)
+       else:
+          mymask = ~pbmask
+
+       residRMS = np.zeros(nchan)
+       residMean = np.zeros(nchan)
+       for i in np.arange(nchan):
+          pix0_masked = np.ma.masked_array(pix0[:,:,0,i],mymask[:,:,0,i])
+          pix0_onlytrue = np.ma.compressed(pix0_masked)
+          (mean, sigma) = biweight_noiter(pix0_onlytrue)
+          residMean[i] = mean
           residRMS[i] = sigma
 
     elif stats=='biweight_noiter':
@@ -410,6 +463,7 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
        ia.open(residImage)
        residStats = ia.statistics(robust=True,axes=[0,1])
        pix0 = ia.getchunk()
+       pbmask = ia.getchunk(getmask=True)
        cs = ia.coordsys()
        shape = ia.shape()
        spax = cs.findaxisbyname('Spectral')
@@ -419,8 +473,47 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
        residPeak = residStats['max'] 
 
        residRMS = np.zeros(nchan)
+       residMean = np.zeros(nchan)
        for i in np.arange(nchan):
-          (mean, sigma) = biweight_noiter(pix0[:,:,:,i].flatten())
+          mymask = ~pbmask[:,:,0,i]
+          pix0_masked = np.ma.masked_array(pix0[:,:,0,i],mymask)
+          pix0_onlytrue = np.ma.compressed(pix0_masked)
+          (mean, sigma) = biweight_noiter(pix0_onlytrue)
+          residMean[i] = mean
+          residRMS[i] = sigma
+
+    elif stats=='biweight_noiter_masked':
+
+       casalog.post('Calculating RMS using biweight without iterations and with previous mask',origin='autobox')
+       
+       ia.open(residImage)
+       residStats = ia.statistics(robust=True,axes=[0,1])
+       pix0 = ia.getchunk()
+       pbmask = ia.getchunk(getmask=True)
+       cs = ia.coordsys()
+       shape = ia.shape()
+       spax = cs.findaxisbyname('Spectral')
+       nchan = shape[spax]
+       ia.done()
+
+       residPeak = residStats['max'] 
+
+       if maskImage:
+          ia.open(maskImage)
+          mask0 = ia.getchunk()
+          ia.close()
+          ia.done()
+          mymask = (~pbmask) | (mask0 > 0.5)
+       else:
+          mymask = ~pbmask
+
+       residRMS = np.zeros(nchan)
+       residMean = np.zeros(nchan)
+       for i in np.arange(nchan):
+          pix0_masked = np.ma.masked_array(pix0[:,:,0,i],mymask[:,:,0,i])
+          pix0_onlytrue = np.ma.compressed(pix0_masked)
+          (mean, sigma) = biweight_noiter(pix0_onlytrue)
+          residMean[i] = mean
           residRMS[i] = sigma
 
     # just calculate the RMS in the whole image
@@ -437,7 +530,7 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
 
     casalog.post('Noise in residual image is ' + str(residRMS), origin='autobox')
 
-    return (residPeak, residRMS)
+    return (residPeak, residRMS, residMean)
  
 
 def createThresholdMask(residImage,psfImage,maskThreshold,minBeamFrac,smoothKernel,cutThreshold,ncycle=1):
