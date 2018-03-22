@@ -4,10 +4,10 @@ if casalog.version() > '5.0.0': # fix needed for casa 5.0.0
    ia = iatool() 
    rg = rgtool()
 
-def runTclean(paramList, 
-              sidelobeThreshold,lowNoiseThreshold, noiseThreshold,  
-              smoothFactor, cutThreshold,
-              minBeamFrac=-1,dilationIters=100,stats='mad',maxiter=5,zscore=-1,f=0.5,pixLim=3.0):
+def runTclean(paramList, sidelobeThreshold,lowNoiseThreshold,
+              noiseThreshold, smoothFactor, cutThreshold,
+              minBeamFrac=-1,dilationIters=100,stats='mad',maxiter=5,zscore=-1,f=0.5,pixLim=3.0,initStats='',
+              locZero=False):
     '''
     run clean
     '''
@@ -63,7 +63,7 @@ def runTclean(paramList,
     imager.runMajorCycle()
     
     # make initial threshold mask
-    (maskThreshold, lowMaskThreshold) = calcThresholds(residImage,pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold,stats=stats,maxiter=maxiter,zscore=zscore,f=f,pixLim=pixLim)
+    (maskThreshold, lowMaskThreshold) = calcThresholds(residImage,pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold,stats=stats,maxiter=maxiter,zscore=zscore,f=f,pixLim=pixLim,initStats=initStats,locZero=locZero)
 
     thresholdMask = createThresholdMask(residImage,psfImage,maskThreshold,minBeamFrac,smoothKernel,cutThreshold,ncycle=imager.ncycle)
     outMask = thresholdMask
@@ -91,7 +91,7 @@ def runTclean(paramList,
         prevMask = maskImage + str(imager.ncycle - 1)
 
         # make threshold mask
-        (maskThreshold, lowMaskThreshold) = calcThresholds(residImage,pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold,stats=stats,maxiter=maxiter,zscore=zscore,f=f,pixLim=pixLim,maskImage=prevMask)
+        (maskThreshold, lowMaskThreshold) = calcThresholds(residImage,pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold,stats=stats,maxiter=maxiter,zscore=zscore,f=f,pixLim=pixLim,maskImage=prevMask,initStats=initStats,locZero=locZero)
 
         thresholdMask = createThresholdMask(residImage,psfImage,maskThreshold,minBeamFrac,smoothKernel,cutThreshold,ncycle=imager.ncycle)
 
@@ -252,7 +252,7 @@ def calcSmooth(psfImage, smoothFactor):
 
     return beam
      
-def calcThresholds(residImage, pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold,stats='mad',maxiter=5,zscore=-1,f=0.5,pixLim=3.0,maskImage=''):
+def calcThresholds(residImage, pbImage, sidelobeThreshold, sidelobeLevel,noiseThreshold,lowNoiseThreshold,stats='mad',maxiter=5,zscore=-1,f=0.5,pixLim=3.0,maskImage='',initStats='',locZero=False):
     '''
     calculate the various thresholds for each mask
     '''
@@ -260,12 +260,17 @@ def calcThresholds(residImage, pbImage, sidelobeThreshold, sidelobeLevel,noiseTh
     import numpy
 
     # determine peak and RMS of residual image
-    (residPeak, residRMS, residMean) = findResidualStats(residImage,pbImage,stats=stats,maxiter=maxiter,zscore=zscore,f=f,pixLim=pixLim,maskImage=maskImage)
+    (residPeak, residRMS, residMean) = findResidualStats(residImage,pbImage,stats=stats,maxiter=maxiter,zscore=zscore,f=f,pixLim=pixLim,maskImage=maskImage,initStats=initStats)
     
     casalog.post("Peak Residual: " + str(residPeak),origin='autobox')
     casalog.post("Residual Mean: " + str(residMean),origin='autobox')
     casalog.post("Residual RMS: " + str(residRMS),origin='autobox')
     
+    # if locZero=True, then set the mean value to 0.0. Otherwise let it float.
+    if locZero:
+       residMean = 0.0
+       casalog.post("setting mean to zero",origin='autobox')
+
     # calculate thresholds
     sidelobeThresholdValue = sidelobeThreshold*sidelobeLevel*residPeak + residMean
     noiseThresholdValue = noiseThreshold*residRMS + residMean
@@ -282,7 +287,7 @@ def calcThresholds(residImage, pbImage, sidelobeThreshold, sidelobeLevel,noiseTh
     return (maskThreshold, lowMaskThreshold)
 
 
-def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5,pixLim=3.0,maskImage=''):
+def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5,pixLim=3.0,maskImage='',initStats=''):
     '''
     calculate the peak of the residual
     '''
@@ -309,6 +314,7 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
 
        ia.open(residImage)
        residStats = ia.statistics(robust=True,axes=[0,1],algorithm='chauvenet',maxiter=maxiter,zscore=zscore)
+       ia.close()
        ia.done()
 
        residPeak = residStats['max'] 
@@ -320,7 +326,9 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
        
        ia.open(residImage)
        residStats = ia.statistics(robust=True,axes=[0,1],algorithm='hinge-fence',fence=f)
+       ia.close()
        ia.done()
+
        residPeak = residStats['max'] 
        residRMS = residStats['rms']
        residMean = residStats['median']
@@ -370,6 +378,8 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
 
     elif stats=='maskedMAD':
 
+       casalog.post('Calculating RMS via the masked MAD',origin='autobox')
+
        ia.open(residImage)
        allStats = ia.statistics(robust=True,axes=[0,1])
        residPeak = allStats['max'] # peak should always be from the whole image, I think.
@@ -390,13 +400,26 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
 
        else:
 
-          ## do I want to have some more options here?? perhaps bweight, etc?
-          casalog.post("No mask image specified. Calculating normal stats using chauvenet",origin='autobox')
+          if initStats == 'chauv':
+             casalog.post("No mask image specified. Calculating normal stats using chauvenet",origin='autobox')
   
-          residStats = ia.statistics(robust=True,axes=[0,1],algorithm='chauvenet',maxiter=maxiter,zscore=zscore)
-          residRMS = residStats['medabsdevmed'] * MADtoRMS
-          residMean = residStats['median']
+             residStats = ia.statistics(robust=True,axes=[0,1],algorithm='chauvenet',maxiter=maxiter,zscore=zscore)
+             residRMS = residStats['medabsdevmed'] * MADtoRMS
+             residMean = residStats['median']
              
+          elif initStats == 'biweight':
+             casalog.post("No mask image specified. Calculating normal stats using biweight",origin='autobox')
+             residStats = ia.statistics(axes=[0,1],algorithm='biweight',niter=10)
+            
+             residRMS = residStats['sigma']
+             residMean = residStats['mean']
+         
+          else:
+             
+             casalog.post("No mask image specified. Calculating normal stats using classic algorithm",origin='autobox')
+             residStats = ia.statistics(axes=[0,1],robust=True)
+             residRMS = residStats['medabsdevmed'] * MADtoRMS
+             residMean = residStats['median']
 
        ia.close()
        ia.done()
@@ -409,7 +432,8 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
        ### This needs to be run in a version of CASA 5.3 that has biweight in ia.statistics
        ia.open(residImage)
        residStats = ia.statistics(axes=[0,1],algorithm='biweight',niter=10)
-       ia.done(residImage)
+       ia.close()
+       ia.done()
 
        residPeak = residStats['max']
        residRMS = residStats['sigma']
@@ -428,24 +452,25 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
        if maskImage:
           # Let's calculate the biweight from classic stats with the mask
           ia.calcmask(maskImage+"<0.5"+"&& mask("+residImage+")",name='madpbmask0') #This makes it the default mask
-          mask0Stats = ia.statistics(robust=True,axes=[0,1],algorithm='biweight',niter=10)
+          mask0Stats = ia.statistics(axes=[0,1],algorithm='biweight',niter=10)
           ia.maskhandler(op='set',name='mask0')
 
-          residRMS = mask0Stats['medabsdevmed'] * MADtoRMS
-          residMean = mask0Stats['median']
+          residRMS = mask0Stats['sigma']
+          residMean = mask0Stats['mean']
 
-          casalog.post("RMS from whole image: "+str(allStats['medabsdevmed'] * MADtoRMS),origin='autobox')
-          casalog.post("RMS from masked image: "+str(mask0Stats['medabsdevmed'] * MADtoRMS),origin='autobox')
+          casalog.post("RMS from whole image: "+str(allStats['medabsdevmed'] * MADtoRMS ),origin='autobox')
+          casalog.post("RMS from masked image: "+str(mask0Stats['sigma'] ),origin='autobox')
           casalog.post("Median from whole image:"+str(allStats['median']), origin='autobox')
-          casalog.post("Median from masked image:"+str(mask0Stats['median']), origin='autobox')
+          casalog.post("Median from masked image:"+str(mask0Stats['mean']), origin='autobox')
 
        else:
 
           casalog.post("No mask image specified. Calculating normal stats using biweight",origin='autobox')
   
-          residStats = ia.statistics(robust=True,axes=[0,1],algorithm='biweight',niter=10)
-          residRMS = residStats['medabsdevmed'] * MADtoRMS
-          residMean = residStats['median']
+          residStats = ia.statistics(axes=[0,1],algorithm='biweight',niter=10)
+
+          residRMS = residStats['sigma']
+          residMean = residStats['mean']
              
 
        ia.close()
@@ -459,7 +484,8 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
        ## This needs to be run in a version of CASA 5.3 that has biweight in ia.statistics
        ia.open(residImage)
        residStats = ia.statistics(axes=[0,1],algorithm='biweight',niter=-1)
-       ia.done(residImage)
+       ia.close()
+       ia.done()
 
        residPeak = residStats['max']
        residRMS = residStats['sigma']
@@ -492,8 +518,8 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
           casalog.post("No mask image specified. Calculating normal stats using biweight",origin='autobox')
   
           residStats = ia.statistics(robust=True,axes=[0,1],algorithm='biweight',niter=-1)
-          residRMS = residStats['medabsdevmed'] * MADtoRMS
-          residMean = residStats['median']
+          residRMS = residStats['sigma']
+          residMean = residStats['mean']
              
 
        ia.close()
@@ -507,7 +533,9 @@ def findResidualStats(residImage, pbImage, stats='mad',maxiter=5,zscore=-1,f=0.5
 
        ia.open(residImage)
        residStats = ia.statistics(robust=True,axes=[0,1])
+       ia.close()
        ia.done()
+
        residPeak = residStats['max'] ## do I want to make this the absolute value of the max/min??
        residRMS = residStats['medabsdevmed'] * MADtoRMS
        residMean = residStats['median']
