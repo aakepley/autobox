@@ -7,7 +7,7 @@ if casalog.version() > '5.0.0': # fix needed for casa 5.0.0
 def runTclean(paramList, sidelobeThreshold,lowNoiseThreshold,
               noiseThreshold, smoothFactor, cutThreshold,
               minBeamFrac=-1,dilationIters=100,stats='mad',maxiter=5,zscore=-1,f=0.5,pixLim=3.0,initStats='',
-              locZero=False):
+              locZero=False, doGrowPrune=True):
     '''
     run clean
     '''
@@ -120,7 +120,7 @@ def runTclean(paramList, sidelobeThreshold,lowNoiseThreshold,
         casalog.post('Done growing mask',origin='autobox')
 
         # prune regions smaller than beam
-        if minBeamFrac > 0:
+        if (minBeamFrac > 0) and doGrowPrune:
             casalog.post("pruning regions smaller than " + str(minBeamFrac) + "times the beam size",origin='autobox')
             inMask = outMask
             outMask = 'tmp_mask_grow_prune'+str(imager.ncycle)
